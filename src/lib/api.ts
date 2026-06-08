@@ -123,6 +123,33 @@ export const api = {
       interval_secs: number;
     }>("consolidate_status"),
 
+  importFolder: (project_id: string, root_path: string) =>
+    invoke<{
+      files_imported: number;
+      memories_created: number;
+      errors: string[];
+    }>("import_folder", {
+      args: { project_id, root_path },
+    }),
+
+  exportMemories: (project_id: string | null, output_path: string) =>
+    invoke<{ memories_written: number; output_path: string }>("export_memories", {
+      args: { project_id, output_path },
+    }),
+
+  setWatch: (project_id: string, root_path: string | null, enabled: boolean) =>
+    invoke<{ enabled_projects: number; watching: string[] }>("set_watch", {
+      args: { project_id, root_path, enabled },
+    }),
+
+  watchStatus: () =>
+    invoke<{ enabled_projects: number; watching: string[] }>("watch_status"),
+
+  setProjectEmbedModel: (project_id: string, model: string | null) =>
+    invoke<void>("set_project_embed_model", {
+      args: { project_id, model },
+    }),
+
   stats: () => invoke<Stats>("stats"),
   listAgents: () => invoke<AgentEntry[]>("list_agents"),
   registerAgent: (name: string, kind: string, meta?: object) =>

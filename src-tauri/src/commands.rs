@@ -151,7 +151,19 @@ pub fn ingest_project(
     state: State<'_, AppState>,
     args: IngestArgs,
 ) -> BiResult<ingest::IngestResult> {
+    project::get(state.inner(), &args.project_id).map_err(|_| {
+        crate::error::BiError::Invalid(format!(
+            "project '{}' does not exist — create it first",
+            args.project_id
+        ))
+    })?;
     let root = std::path::PathBuf::from(&args.root_path);
+    if !root.exists() {
+        return Err(crate::error::BiError::Invalid(format!(
+            "root_path '{}' does not exist on disk",
+            args.root_path
+        )));
+    }
     ingest::ingest_project(state.inner(), &args.project_id, &root)
 }
 
@@ -173,8 +185,11 @@ pub fn consolidate_now(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> BiResult<consolidate::ConsolidateReport> {
-    if project_id.is_some() {
-        consolidate::consolidate(state.inner(), project_id.as_deref())
+    if let Some(pid) = project_id.as_deref() {
+        project::get(state.inner(), pid).map_err(|_| {
+            crate::error::BiError::Invalid(format!("project '{pid}' does not exist"))
+        })?;
+        consolidate::consolidate(state.inner(), Some(pid))
     } else {
         crate::scheduler::run_now(state.inner())
     }
@@ -183,6 +198,105 @@ pub fn consolidate_now(
 #[tauri::command]
 pub fn consolidate_status(state: State<'_, AppState>) -> BiResult<crate::scheduler::ConsolidateStatus> {
     Ok(crate::scheduler::get_status())
+}
+
+#[derive(Deserialize)]
+pub struct ImportArgs {
+    pub project_id: String,
+    pub root_path: String,
+}
+
+#[tauri::command]
+pub fn import_folder(
+    state: State<'_, AppState>,
+    args: ImportArgs,
+) -> BiResult<crate::io::ImportResult> {
+    project::get(state.inner(), &args.project_id).map_err(|_| {
+        crate::error::BiError::Invalid(format!(
+            "project '{}' does not exist — create it first",
+            args.project_id
+        ))
+    })?;
+    let root = std::path::Path::new(&args.root_path);
+    if !root.exists() {
+        return Err(crate::error::BiError::Invalid(format!(
+            "root_path '{}' does not exist on disk",
+            args.root_path
+        )));
+    }
+    crate::io::import_folder(state.inner(), &args.project_id, root)
+}
+
+#[derive(Deserialize)]
+pub struct ExportArgs {
+    pub project_id: Option<String>,
+    pub output_path: String,
+}
+
+#[tauri::command]
+pub fn export_memories(
+    state: State<'_, AppState>,
+    args: ExportArgs,
+) -> BiResult<crate::io::ExportResult> {
+    crate::io::export_memories(
+        state.inner(),
+        args.project_id.as_deref(),
+        std::path::Path::new(&args.output_path),
+    )
+}
+
+#[derive(Deserialize)]
+pub struct WatchArgs {
+    pub project_id: String,
+    pub root_path: Option<String>,
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub fn set_watch(
+    state: State<'_, AppState>,
+    args: WatchArgs,
+) -> BiResult<crate::io::WatchStatus> {
+    if args.enabled {
+        let root = if let Some(r) = args.root_path.as_ref() {
+            std::path::PathBuf::from(r)
+        } else {
+            let conn = state.db.conn()?;
+            let root: Option<String> = conn
+                .query_row(
+                    "SELECT root_path FROM projects WHERE id = ?1",
+                    rusqlite::params![&args.project_id],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            std::path::PathBuf::from(
+                root.ok_or_else(|| {
+                    crate::error::BiError::Invalid("no root_path on project".into())
+                })?,
+            )
+        };
+        crate::io::enable_watch(state.inner(), &args.project_id, &root)?;
+    } else {
+        crate::io::disable_watch(state.inner(), &args.project_id)?;
+    }
+    Ok(crate::io::watch_status())
+}
+
+#[tauri::command]
+pub fn watch_status() -> crate::io::WatchStatus {
+    crate::io::watch_status()
+}
+
+#[derive(Deserialize)]
+pub struct SetModelArgs {
+    pub project_id: String,
+    pub model: Option<String>,
+}
+
+#[tauri::command]
+pub fn set_project_embed_model(state: State<'_, AppState>, args: SetModelArgs) -> BiResult<()> {
+    crate::io::set_project_embed_model(state.inner(), &args.project_id, args.model.as_deref())
 }
 
 #[tauri::command]

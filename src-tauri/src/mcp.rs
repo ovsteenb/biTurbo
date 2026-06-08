@@ -89,9 +89,27 @@ fn ok(id: &Value, result: Value) -> Value {
 
 async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<Vec<Value>> {
     let text = |v: &str| vec![json!({ "type": "text", "text": v })];
+    let require_project = |pid: &str| -> BiResult<()> {
+        project::get(state, pid).map(|_| ()).map_err(|_| {
+            crate::error::BiError::Invalid(format!(
+                "project '{pid}' does not exist — create it first with create_project"
+            ))
+        })
+    };
+    let require_path = |path: &str, label: &str| -> BiResult<()> {
+        if !std::path::Path::new(path).exists() {
+            return Err(crate::error::BiError::Invalid(format!(
+                "{label} '{path}' does not exist on disk"
+            )));
+        }
+        Ok(())
+    };
     let result = match name {
         "remember" => {
-            let input: RememberInput = serde_json::from_value(args)?;
+            let input: RememberInput = serde_json::from_value(args.clone())?;
+            if let Some(pid) = input.project_id.as_deref() {
+                require_project(pid)?;
+            }
             let m = memory::remember(state, input)?;
             text(&serde_json::to_string_pretty(&m)?)
         }
@@ -159,13 +177,16 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             text(&serde_json::to_string_pretty(&p)?)
         }
         "delete_project" => {
-            let id = arg_str(&args, "id")?;
+            let id = arg_str(&args, "project_id")?;
+            require_project(&id)?;
             project::delete(state, &id)?;
             text(&serde_json::to_string_pretty(&json!({ "deleted": id }))?)
         }
         "ingest_project" => {
             let project_id = arg_str(&args, "project_id")?;
             let root_path = arg_str(&args, "root_path")?;
+            require_project(&project_id)?;
+            require_path(&root_path, "root_path")?;
             let r = ingest::ingest_project(state, &project_id, std::path::Path::new(&root_path))?;
             text(&serde_json::to_string_pretty(&r)?)
         }
@@ -177,6 +198,7 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "consolidate" => {
             let project_id = args.get("project_id").and_then(|v| v.as_str());
             let r = if let Some(p) = project_id {
+                require_project(p)?;
                 consolidate::consolidate(state, Some(p))?
             } else {
                 crate::scheduler::run_now(state)?
@@ -186,6 +208,50 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "consolidate_status" => {
             let s = crate::scheduler::get_status();
             text(&serde_json::to_string_pretty(&s)?)
+        }
+        "import_folder" => {
+            let project_id = arg_str(&args, "project_id")?;
+            let root_path = arg_str(&args, "root_path")?;
+            require_project(&project_id)?;
+            require_path(&root_path, "root_path")?;
+            let r = crate::io::import_folder(state, &project_id, std::path::Path::new(&root_path))?;
+            text(&serde_json::to_string_pretty(&r)?)
+        }
+        "export_memories" => {
+            let project_id = args.get("project_id").and_then(|v| v.as_str());
+            if let Some(p) = project_id {
+                require_project(p)?;
+            }
+            let output_path = arg_str(&args, "output_path")?;
+            let r = crate::io::export_memories(state, project_id, std::path::Path::new(&output_path))?;
+            text(&serde_json::to_string_pretty(&r)?)
+        }
+        "enable_watch" => {
+            let project_id = arg_str(&args, "project_id")?;
+            let root_path = arg_str(&args, "root_path")?;
+            require_project(&project_id)?;
+            require_path(&root_path, "root_path")?;
+            crate::io::enable_watch(state, &project_id, std::path::Path::new(&root_path))?;
+            let s = crate::io::watch_status();
+            text(&serde_json::to_string_pretty(&s)?)
+        }
+        "disable_watch" => {
+            let project_id = arg_str(&args, "project_id")?;
+            require_project(&project_id)?;
+            crate::io::disable_watch(state, &project_id)?;
+            let s = crate::io::watch_status();
+            text(&serde_json::to_string_pretty(&s)?)
+        }
+        "watch_status" => {
+            let s = crate::io::watch_status();
+            text(&serde_json::to_string_pretty(&s)?)
+        }
+        "set_project_embed_model" => {
+            let project_id = arg_str(&args, "project_id")?;
+            require_project(&project_id)?;
+            let model = args.get("model").and_then(|v| v.as_str()).map(String::from);
+            crate::io::set_project_embed_model(state, &project_id, model.as_deref())?;
+            text("{}")
         }
         "stats" => {
             let conn = state.db.conn()?;
@@ -272,7 +338,7 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"list_projects","description":"List all projects.","inputSchema":{"type":"object","properties":{}}},
 {"name":"get_project","description":"Fetch one project by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"create_project","description":"Create a new project.","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"id":{"type":"string"},"description":{"type":"string"},"root_path":{"type":"string"},"bit_width":{"type":"number"}}}},
-{"name":"delete_project","description":"Delete a project and all its memories. 'default' cannot be deleted.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
+{"name":"delete_project","description":"Delete a project and all its memories. 'default' cannot be deleted.","inputSchema":{"type":"object","required":["project_id"],"properties":{"project_id":{"type":"string"}}}},
 {"name":"ingest_project","description":"Index a code directory via tree-sitter (rust/typescript/javascript/python/go).","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
 {"name":"consolidate","description":"Run memory maintenance: decay, dedup (cosine >= 0.95), merge.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
 {"name":"stats","description":"Global stats.","inputSchema":{"type":"object","properties":{}}},

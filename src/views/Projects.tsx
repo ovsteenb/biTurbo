@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import { api } from "../lib/api";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2 } from "lucide-react";
+import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2, Eye, Download, FileText, Radar } from "lucide-react";
 import clsx from "clsx";
 
 interface IngestProgress {
@@ -30,6 +30,14 @@ export function Projects() {
   const [rootPath, setRootPath] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<IngestProgress | null>(null);
+  const [watchOn, setWatchOn] = useState<Record<string, boolean>>({});
+  const [importingFor, setImportingFor] = useState<string | null>(null);
+
+  useEffect(() => {
+    const next: Record<string, boolean> = {};
+    for (const p of projects) next[p.id] = p.watch_enabled;
+    setWatchOn(next);
+  }, [projects]);
 
   useEffect(() => {
     const un = listen<IngestProgress>("ingest:progress", (e) => {
@@ -114,6 +122,69 @@ export function Projects() {
       showToast({ kind: "err", text: String(e) });
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function importFolder(projectId: string) {
+    const sel = await open({ directory: true, multiple: false, title: `Import folder into ${projectId}` });
+    if (typeof sel !== "string") return;
+    setImportingFor(projectId);
+    try {
+      const r = await api.importFolder(projectId, sel);
+      await refreshProjects();
+      await refreshStats();
+      showToast({
+        kind: "ok",
+        text: `Imported ${r.files_imported} files · ${r.memories_created} memories${r.errors.length ? ` · ${r.errors.length} errors` : ""}`,
+      });
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
+    } finally {
+      setImportingFor(null);
+    }
+  }
+
+  async function exportProject(projectId: string | null) {
+    const suggested = `biturbo-${projectId ?? "all"}-${Date.now()}.json`;
+    const target = await save({
+      defaultPath: suggested,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!target) return;
+    try {
+      const r = await api.exportMemories(projectId, target);
+      showToast({ kind: "ok", text: `Exported ${r.memories_written} memories → ${r.output_path}` });
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function toggleWatch(projectId: string, root: string | null, enabled: boolean) {
+    try {
+      await api.setWatch(projectId, root, enabled);
+      setWatchOn((s) => ({ ...s, [projectId]: enabled }));
+      showToast({
+        kind: "ok",
+        text: enabled ? `Watching ${projectId} (auto-reingest on changes)` : `Stopped watching ${projectId}`,
+      });
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function setModel(projectId: string, current: string | null) {
+    const input = prompt(
+      `Embedding model for "${projectId}" (BGE-small-en-v1.5, BGE-base-en-v1.5, BGE-large-en-v1.5, all-MiniLM-L6-v2). Leave empty to clear.`,
+      current ?? ""
+    );
+    if (input === null) return;
+    const model = input.trim() === "" ? null : input.trim();
+    try {
+      await api.setProjectEmbedModel(projectId, model);
+      await refreshProjects();
+      showToast({ kind: "ok", text: model ? `Set model to ${model}` : "Cleared model preference" });
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
     }
   }
 
@@ -279,13 +350,21 @@ export function Projects() {
                       <span className="font-mono">{p.indexed_count}</span> code chunks
                     </span>
                     <span className="font-mono text-[10px] text-text-dim">
-                      dim={p.dim} · {p.bit_width}-bit
+                      dim={p.dim} · {p.bit_width}-bit{p.embed_model ? ` · ${p.embed_model}` : ""}
                     </span>
+                    {watchOn[p.id] && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[10px] text-success"
+                        title="Watching for changes"
+                      >
+                        <Radar size={9} className="animate-pulse" /> watching
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
 
-              <div className="mt-4 flex items-center gap-2 border-t border-border-subtle pt-3">
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3">
                 {!active && (
                   <button
                     onClick={() => setCurrentProjectId(p.id)}
@@ -304,12 +383,56 @@ export function Projects() {
                     {isIngesting ? "Indexing…" : "Re-index code"}
                   </button>
                 )}
+                <button
+                  onClick={() => importFolder(p.id)}
+                  disabled={importingFor === p.id}
+                  className="btn-outline"
+                  title="Import all .md/.txt files in a folder as memories"
+                >
+                  <FileText size={12} />
+                  {importingFor === p.id ? "Importing…" : "Import .md folder"}
+                </button>
+                <button
+                  onClick={() => exportProject(p.id)}
+                  className="btn-outline"
+                  title="Export all memories of this project to JSON"
+                >
+                  <Download size={12} /> Export
+                </button>
+                {p.root_path && (
+                  <button
+                    onClick={() => toggleWatch(p.id, p.root_path, !watchOn[p.id])}
+                    className={clsx(
+                      "btn-outline",
+                      watchOn[p.id] && "border-success/40 text-success"
+                    )}
+                    title={watchOn[p.id] ? "Stop watching for changes" : "Watch for changes; auto-reingest on file events"}
+                  >
+                    <Radar size={12} className={watchOn[p.id] ? "animate-pulse" : ""} />
+                    {watchOn[p.id] ? "Unwatch" : "Watch"}
+                  </button>
+                )}
+                <button
+                  onClick={() => setModel(p.id, p.embed_model)}
+                  className="btn-outline"
+                  title="Set preferred embedding model for this project"
+                >
+                  embed model
+                </button>
                 <div className="flex-1" />
+                <button
+                  onClick={() => exportProject(null)}
+                  className="btn-ghost text-[11px] text-text-muted"
+                  title="Export all memories across all projects"
+                >
+                  <Eye size={11} /> Export all
+                </button>
                 {p.id !== "default" && (
                   <button
                     onClick={() => remove(p.id)}
                     disabled={busy === p.id}
                     className="btn-ghost text-danger hover:bg-danger/10"
+                    title="Delete project"
                   >
                     <Trash2 size={12} />
                   </button>

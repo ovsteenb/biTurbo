@@ -40,8 +40,8 @@ export interface Project {
   dim: number;
   memory_count: number;
   indexed_count: number;
-  created_at: number;
-  updated_at: number;
+  embed_model: string | null;
+  watch_enabled: boolean;
 }
 
 export interface AgentEntry {

@@ -1,0 +1,265 @@
+use crate::db::log_activity;
+use crate::error::{BiError, BiResult};
+use crate::ingest;
+use crate::state::AppState;
+use ignore::WalkBuilder;
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImportResult {
+    pub files_imported: usize,
+    pub memories_created: usize,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExportResult {
+    pub memories_written: usize,
+    pub output_path: String,
+}
+
+pub fn import_folder(state: &AppState, project_id: &str, root: &Path) -> BiResult<ImportResult> {
+    let mut result = ImportResult::default();
+
+    let files: Vec<PathBuf> = WalkBuilder::new(root)
+        .standard_filters(true)
+        .git_ignore(true)
+        .git_global(true)
+        .hidden(true)
+        .build()
+        .filter_map(|r| r.ok())
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| {
+            let p = e.path().to_path_buf();
+            let ext = p.extension()?.to_str()?;
+            if matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown" | "txt" | "org") {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for path in &files {
+        let Ok(source) = std::fs::read_to_string(path) else { continue };
+        let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("md");
+        let chunks = chunk_markdown(&source);
+        for (i, chunk_text) in chunks.into_iter().enumerate() {
+            if chunk_text.trim().is_empty() { continue; }
+            let input = crate::memory::RememberInput {
+                content: chunk_text,
+                mem_type: Some("fact".to_string()),
+                project_id: Some(project_id.to_string()),
+                tags: Some(vec!["imported".to_string(), format!("md:{ext}")]),
+                importance: Some(0.5),
+                source_agent: Some("import_folder".to_string()),
+                file_path: Some(path.to_string_lossy().to_string()),
+                ..Default::default()
+            };
+            match crate::memory::remember(state, input) {
+                Ok(_) => result.memories_created += 1,
+                Err(e) => result.errors.push(format!("{rel} chunk {i}: {e}")),
+            }
+        }
+        result.files_imported += 1;
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    state.db.write(|tx| {
+        tx.execute(
+            "UPDATE projects SET memory_count = memory_count + ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![result.memories_created as i64, now, project_id],
+        )?;
+        log_activity(
+            tx,
+            Some(project_id),
+            Some("import_folder"),
+            "import",
+            None,
+            Some(&serde_json::json!({
+                "files": result.files_imported,
+                "memories": result.memories_created,
+            })),
+        )?;
+        Ok(())
+    })?;
+
+    Ok(result)
+}
+
+fn chunk_markdown(content: &str) -> Vec<String> {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    const MAX_CHUNK: usize = 1500;
+
+    for line in content.lines() {
+        if (line.starts_with("# ") || line.starts_with("## ") || line.starts_with("### "))
+            && !current.trim().is_empty()
+        {
+            chunks.push(current.trim().to_string());
+            current.clear();
+            current_len = 0;
+        }
+        current.push_str(line);
+        current.push('\n');
+        current_len += line.len() + 1;
+        if current_len > MAX_CHUNK {
+            chunks.push(current.trim().to_string());
+            current.clear();
+            current_len = 0;
+        }
+    }
+    if !current.trim().is_empty() {
+        chunks.push(current.trim().to_string());
+    }
+    if chunks.is_empty() && !content.is_empty() {
+        chunks.push(content.to_string());
+    }
+    chunks
+}
+
+pub fn export_memories(
+    state: &AppState,
+    project_id: Option<&str>,
+    output_path: &Path,
+) -> BiResult<ExportResult> {
+    let mems = crate::memory::list(state, project_id, None, 1_000_000, 0)?;
+    let json = serde_json::to_string_pretty(&serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "exported_at": chrono::Utc::now().timestamp_millis(),
+        "project_id": project_id,
+        "memories": mems,
+    }))?;
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(output_path, json).map_err(|e| BiError::Io(format!("write {}: {e}", output_path.display())))?;
+    Ok(ExportResult {
+        memories_written: mems.len(),
+        output_path: output_path.to_string_lossy().to_string(),
+    })
+}
+
+pub fn set_project_embed_model(state: &AppState, project_id: &str, model: Option<&str>) -> BiResult<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    state.db.write(|tx| {
+        tx.execute(
+            "UPDATE projects SET embed_model = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![model, now, project_id],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WatchStatus {
+    pub enabled_projects: usize,
+    pub watching: Vec<String>,
+}
+
+type WatchHandle = Arc<Mutex<Option<notify::RecommendedWatcher>>>;
+static WATCHERS: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, WatchHandle>>> =
+    once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
+
+pub fn enable_watch(state: &AppState, project_id: &str, root: &Path) -> BiResult<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    state.db.write(|tx| {
+        tx.execute(
+            "UPDATE projects SET watch_enabled = 1, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, project_id],
+        )?;
+        Ok(())
+    })?;
+    spawn_watcher(state, project_id, root);
+    Ok(())
+}
+
+pub fn disable_watch(_state: &AppState, project_id: &str) -> BiResult<()> {
+    WATCHERS.write().remove(project_id);
+    Ok(())
+}
+
+pub fn watch_status() -> WatchStatus {
+    let g = WATCHERS.read();
+    let watching: Vec<String> = g.keys().cloned().collect();
+    WatchStatus {
+        enabled_projects: watching.len(),
+        watching,
+    }
+}
+
+fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
+    let project_id_owned = project_id.to_string();
+    let root_owned = root.to_path_buf();
+    let state_for_cb: Arc<AppState> = Arc::new(state.clone());
+    let last_ingest: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let last_ingest_for_cb = last_ingest.clone();
+
+    let pid_for_event = project_id_owned.clone();
+    let root_for_event = root_owned.clone();
+    let state_for_event = state_for_cb.clone();
+
+    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        match res {
+            Ok(event) => {
+                if !matches!(
+                    event.kind,
+                    notify::EventKind::Create(_)
+                        | notify::EventKind::Modify(_)
+                        | notify::EventKind::Remove(_)
+                ) {
+                    return;
+                }
+                let mut guard = last_ingest_for_cb.lock();
+                if let Some(t) = *guard {
+                    if t.elapsed() < Duration::from_secs(15) {
+                        return;
+                    }
+                }
+                *guard = Some(Instant::now());
+                drop(guard);
+                let state_clone = state_for_event.clone();
+                let pid = pid_for_event.clone();
+                let root = root_for_event.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let _ = ingest::ingest_project(&state_clone, &pid, &root);
+                });
+            }
+            Err(_) => {}
+        }
+    }) {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+
+    use notify::Watcher;
+    let _ = watcher.watch(root, notify::RecursiveMode::Recursive);
+    WATCHERS
+        .write()
+        .insert(project_id_owned, Arc::new(Mutex::new(Some(watcher))));
+}
+
+pub fn resume_watches(state: &AppState) {
+    let Ok(conn) = state.db.conn() else { return; };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, root_path FROM projects WHERE watch_enabled = 1 AND root_path IS NOT NULL",
+    ) else { return; };
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .ok()
+        .map(|it| it.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default();
+    for (id, root) in rows {
+        if !WATCHERS.read().contains_key(&id) {
+            spawn_watcher(state, &id, Path::new(&root));
+        }
+    }
+}

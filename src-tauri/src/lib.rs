@@ -25,6 +25,7 @@ pub mod embed;
 pub mod error;
 pub mod index_engine;
 pub mod ingest;
+pub mod io;
 pub mod mcp;
 pub mod memory;
 pub mod project;
@@ -66,7 +67,8 @@ pub fn run() {
             state.app = Some(app.handle().clone());
             let state_arc = Arc::new(state);
             scheduler::spawn(state_arc.clone());
-            app.manage(state_arc);
+            io::resume_watches(&state_arc);
+            app.manage((*state_arc).clone());
             info!("biTurbo ready @ {}", data_dir.display());
             Ok(())
         })
@@ -87,6 +89,11 @@ pub fn run() {
             commands::list_tags,
             commands::consolidate_now,
             commands::consolidate_status,
+            commands::import_folder,
+            commands::export_memories,
+            commands::set_watch,
+            commands::watch_status,
+            commands::set_project_embed_model,
             commands::stats,
             commands::list_agents,
             commands::register_agent,

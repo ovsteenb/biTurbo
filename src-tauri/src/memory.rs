@@ -101,6 +101,11 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
         .project_id
         .clone()
         .unwrap_or_else(|| state.default_project_id.clone());
+    crate::project::get(state, &project_id).map_err(|_| {
+        BiError::Invalid(format!(
+            "project '{project_id}' does not exist — create it first with create_project"
+        ))
+    })?;
     let mem_type = input.mem_type.as_deref().unwrap_or("fact").to_string();
     let importance = input.importance.unwrap_or(0.5).clamp(0.0, 1.0);
     let uid = uuid::Uuid::new_v4().to_string();
