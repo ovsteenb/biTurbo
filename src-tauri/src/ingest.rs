@@ -1,5 +1,6 @@
 use crate::db::{self, log_activity};
 use crate::error::{BiError, BiResult};
+use crate::index_engine::ProjectIndex;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -8,6 +9,8 @@ use tauri::Emitter;
 use tree_sitter::{Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
 use ignore::WalkBuilder;
+
+const CHUNK_INSERT_BATCH: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IngestResult {
@@ -55,6 +58,17 @@ pub struct GraphEdge {
     pub to: String,
     pub edge_type: String,
     pub weight: f32,
+}
+
+struct PendingChunk {
+    uid: String,
+    content_for_embed: String,
+    db_content: String,
+    file_path: String,
+    start_line: i64,
+    end_line: i64,
+    language: String,
+    file_uid: String,
 }
 
 pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResult<IngestResult> {
@@ -118,6 +132,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     })?;
 
     let mut file_uids: BTreeMap<String, String> = BTreeMap::new();
+    let mut pending_chunks: Vec<PendingChunk> = Vec::new();
     let mut pending_edges: Vec<(String, String, String, f32)> = Vec::new();
 
     let total = files.len().max(1);
@@ -131,7 +146,6 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
             result.chunks_indexed,
         );
         let Some(lang) = detect_language(path) else { continue };
-        let Some(lang) = detect_language(path) else { continue };
         let Ok(source) = std::fs::read_to_string(path) else { continue };
         result.bytes_processed += source.len() as u64;
         let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
@@ -141,7 +155,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
             Ok(chunks) => {
                 for chunk in chunks {
                     let uid = format!("{project_id}::{rel}::{}", chunk.start_line);
-                    let content = format!(
+                    let embed_text = format!(
                         "```{lang}\n// {}:{}-{}\n{}```\n{}",
                         path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
                         chunk.start_line,
@@ -149,27 +163,23 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
                         chunk.code,
                         chunk.kind,
                     );
-                    state.embed_and_add(project_id, &uid, &content)?;
-                    let now2 = chrono::Utc::now().timestamp_millis();
-                    state.db.write(|tx| {
-                        tx.execute(
-                            "INSERT OR REPLACE INTO memories
-                               (uid, project_id, mem_type, content, importance,
-                                created_at, updated_at, last_access, access_count,
-                                file_path, start_line, end_line, language)
-                             VALUES(?1,?2,'code',?3,0.5,?4,?4,?4,0,?5,?6,?7,?8)",
-                            rusqlite::params![
-                                uid, project_id,
-                                format!("// {}:{}-{}\n{}", path.file_name()
-                                    .and_then(|s| s.to_str()).unwrap_or(""),
-                                    chunk.start_line, chunk.end_line, chunk.code),
-                                now2, path.to_string_lossy().to_string(),
-                                chunk.start_line as i64, chunk.end_line as i64, lang,
-                            ],
-                        )?;
-                        Ok(())
-                    })?;
-                    pending_edges.push((uid, file_uid.clone(), "member_of".into(), 1.0));
+                    let db_content = format!(
+                        "// {}:{}-{}\n{}",
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                        chunk.start_line,
+                        chunk.end_line,
+                        chunk.code,
+                    );
+                    pending_chunks.push(PendingChunk {
+                        uid,
+                        content_for_embed: embed_text,
+                        db_content,
+                        file_path: path.to_string_lossy().to_string(),
+                        start_line: chunk.start_line as i64,
+                        end_line: chunk.end_line as i64,
+                        language: lang.to_string(),
+                        file_uid: file_uid.clone(),
+                    });
                     result.chunks_indexed += 1;
                 }
                 file_uids.insert(rel.clone(), file_uid.clone());
@@ -195,28 +205,92 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         }
     }
 
+    // ---- BATCHED: embed all chunks in one call (fastembed handles batching internally) ----
+    emit_progress(state, "embedding", total, total, None, result.chunks_indexed);
+    let embed_texts: Vec<&str> = pending_chunks.iter().map(|c| c.content_for_embed.as_str()).collect();
+    let embeddings = state.embedder.embed_batch(&embed_texts)?;
+
+    // ---- BATCHED: insert all chunks + index them, in batches of CHUNK_INSERT_BATCH ----
+    let idx = state.get_or_load_index(project_id)?;
+    let mut processed = 0;
+    for batch in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let n = batch.len();
+        let placeholders: Vec<String> = (0..n)
+            .map(|i| {
+                let b = i * 15;
+                format!("(?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{})",
+                    b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8, b+9, b+10, b+11, b+12, b+13, b+14, b+15)
+            })
+            .collect();
+        let sql = format!(
+            "INSERT OR REPLACE INTO memories
+               (uid, project_id, mem_type, content, importance,
+                created_at, updated_at, last_access, access_count,
+                file_path, start_line, end_line, language, tags, source_agent)
+             VALUES {}",
+            placeholders.join(",")
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n * 15);
+        for c in batch {
+            params.push(Box::new(c.uid.clone()));
+            params.push(Box::new(project_id.to_string()));
+            params.push(Box::new("code"));
+            params.push(Box::new(c.db_content.clone()));
+            params.push(Box::new(0.5_f32));
+            params.push(Box::new(now));
+            params.push(Box::new(now));
+            params.push(Box::new(now));
+            params.push(Box::new(0_i64));
+            params.push(Box::new(c.file_path.clone()));
+            params.push(Box::new(c.start_line));
+            params.push(Box::new(c.end_line));
+            params.push(Box::new(c.language.clone()));
+            params.push(Box::new("[]"));
+            params.push(Box::new(Option::<String>::None));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        state.db.write(|tx| {
+            let mut stmt = tx.prepare(&sql)?;
+            stmt.execute(refs.as_slice())?;
+            Ok(())
+        })?;
+        for (c, emb) in batch.iter().zip(embeddings[processed..processed + n].iter()) {
+            idx.add(&c.uid, emb)?;
+            pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
+        }
+        processed += n;
+    }
+
+    // ---- BATCHED: insert all edges in one multi-row INSERT ----
     if !pending_edges.is_empty() {
         emit_progress(state, "edges", total, total, None, result.chunks_indexed);
-        let mut stmt_insert = String::from(
-            "INSERT INTO code_edges(project_id, from_uid, to_uid, edge_type, weight, created_at) VALUES "
+        let n = pending_edges.len();
+        let placeholders: Vec<String> = (0..n)
+            .map(|i| {
+                let b = i * 6;
+                format!("(?{},?{},?{},?{},?{},?{})", b+1, b+2, b+3, b+4, b+5, b+6)
+            })
+            .collect();
+        let sql = format!(
+            "INSERT INTO code_edges(project_id, from_uid, to_uid, edge_type, weight, created_at) VALUES {}",
+            placeholders.join(",")
         );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        for (i, (from, to, etype, weight)) in pending_edges.iter().enumerate() {
-            if i > 0 { stmt_insert.push(','); }
-            let base = i * 6;
-            stmt_insert.push_str(&format!("(?{},?{},?{},?{},?{},?{})", base+1, base+2, base+3, base+4, base+5, base+6));
-            params.push(Box::new(project_id.clone()));
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n * 6);
+        let now = chrono::Utc::now().timestamp_millis();
+        for (from, to, etype, weight) in &pending_edges {
+            params.push(Box::new(project_id.to_string()));
             params.push(Box::new(from.clone()));
             params.push(Box::new(to.clone()));
             params.push(Box::new(etype.clone()));
             params.push(Box::new(*weight));
             params.push(Box::new(now));
         }
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         state.db.write(|tx| {
-            let mut stmt = tx.prepare(&stmt_insert)?;
-            let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let mut stmt = tx.prepare(&sql)?;
             stmt.execute(refs.as_slice())?;
-            result.edges_created = pending_edges.len();
+            result.edges_created = n;
             Ok(())
         })?;
     }
@@ -241,32 +315,10 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         Ok(())
     })?;
 
+    state.embedder.release_if_idle();
     emit_progress(state, "done", total, total, None, result.chunks_indexed);
 
     Ok(result)
-}
-
-fn emit_progress(
-    state: &AppState,
-    phase: &str,
-    current: usize,
-    total: usize,
-    file: Option<String>,
-    chunks_so_far: usize,
-) {
-    if let Some(app) = &state.app {
-        let _ = app.emit(
-            "ingest:progress",
-            IngestProgress {
-                project_id: state.default_project_id.clone(),
-                phase: phase.to_string(),
-                current,
-                total,
-                file,
-                chunks_so_far,
-            },
-        );
-    }
 }
 
 pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphData> {
@@ -367,44 +419,6 @@ fn derive_label(content: &str) -> String {
         .unwrap_or_else(|| "(anon)".into())
 }
 
-fn language_for(lang: &str) -> Result<tree_sitter::Language, String> {
-    let lang: tree_sitter::Language = match lang {
-        "rust" => tree_sitter_rust::LANGUAGE.into(),
-        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
-        "python" => tree_sitter_python::LANGUAGE.into(),
-        "go" => tree_sitter_go::LANGUAGE.into(),
-        "swift" => tree_sitter_swift::LANGUAGE.into(),
-        "php" => tree_sitter_php::LANGUAGE_PHP.into(),
-        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
-        "java" => tree_sitter_java::LANGUAGE.into(),
-        "kotlin" => return Err("kotlin pending version bump".into()),
-        "c" => tree_sitter_c::LANGUAGE.into(),
-        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
-        "csharp" => tree_sitter_c_sharp::LANGUAGE.into(),
-        "bash" => tree_sitter_bash::LANGUAGE.into(),
-        "sql" => return Err("sql pending version bump".into()),
-        "html" => tree_sitter_html::LANGUAGE.into(),
-        "css" => tree_sitter_css::LANGUAGE.into(),
-        "markdown" => return Err("markdown pending version bump".into()),
-        _ => return Err(format!("unsupported lang {lang}")),
-    };
-    Ok(lang)
-}
-
-fn is_ignored(p: &Path) -> bool {
-    let s = p.to_string_lossy();
-    s.contains("/node_modules/")
-        || s.contains("/.git/")
-        || s.contains("/target/")
-        || s.contains("/dist/")
-        || s.contains("/build/")
-        || s.contains("/.next/")
-        || s.contains("/__pycache__/")
-        || s.contains("/.venv/")
-        || s.contains("/vendor/")
-}
-
 fn detect_language(p: &Path) -> Option<&'static str> {
     let ext = p.extension()?.to_str()?;
     Some(match ext {
@@ -422,12 +436,32 @@ fn detect_language(p: &Path) -> Option<&'static str> {
         "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" => "cpp",
         "cs" => "csharp",
         "sh" | "bash" => "bash",
-        "sql" => "sql",
         "html" | "htm" => "html",
         "css" => "css",
-        "md" | "markdown" => "markdown",
         _ => return None,
     })
+}
+
+fn language_for(lang: &str) -> Result<tree_sitter::Language, String> {
+    let lang: tree_sitter::Language = match lang {
+        "rust" => tree_sitter_rust::LANGUAGE.into(),
+        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
+        "python" => tree_sitter_python::LANGUAGE.into(),
+        "go" => tree_sitter_go::LANGUAGE.into(),
+        "swift" => tree_sitter_swift::LANGUAGE.into(),
+        "php" => tree_sitter_php::LANGUAGE_PHP.into(),
+        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
+        "java" => tree_sitter_java::LANGUAGE.into(),
+        "c" => tree_sitter_c::LANGUAGE.into(),
+        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+        "csharp" => tree_sitter_c_sharp::LANGUAGE.into(),
+        "bash" => tree_sitter_bash::LANGUAGE.into(),
+        "html" => tree_sitter_html::LANGUAGE.into(),
+        "css" => tree_sitter_css::LANGUAGE.into(),
+        _ => return Err(format!("unsupported lang {lang}")),
+    };
+    Ok(lang)
 }
 
 #[derive(Debug, Clone)]
@@ -499,11 +533,6 @@ fn extract_chunks(_path: &Path, source: &str, lang: &str) -> Result<Vec<Chunk>, 
             (interface_declaration) @def
             (enum_declaration) @def
         "#,
-        "kotlin" => r#"
-            (function_declaration) @def
-            (class_declaration) @def
-            (object_declaration) @def
-        "#,
         "c" => r#"
             (function_definition) @def
             (struct_specifier) @def
@@ -525,16 +554,13 @@ fn extract_chunks(_path: &Path, source: &str, lang: &str) -> Result<Vec<Chunk>, 
         "bash" => r#"
             (function_definition) @def
         "#,
-        "sql" => r#" "#,
-        "html" => r#" "#,
         "css" => r#"
             (rule_set) @def
         "#,
-        "markdown" => r#" "#,
         _ => return Err(format!("no query for {lang}")),
     };
 
-    let query = Query::new(&lang_ptr.into(), query_src).map_err(|e| e.to_string())?;
+    let query = Query::new(&lang_ptr, query_src).map_err(|e| e.to_string())?;
     let mut cursor = QueryCursor::new();
     let mut chunks = Vec::new();
     let lines: Vec<&str> = source.lines().collect();
@@ -575,10 +601,11 @@ fn extract_chunks(_path: &Path, source: &str, lang: &str) -> Result<Vec<Chunk>, 
 
 fn extract_imports(_path: &Path, source: &str, lang: &str) -> Vec<String> {
     let mut parser = Parser::new();
-    let Ok(lang_ptr) = language_for(lang) else { return Vec::new() };
-    if parser.set_language(&lang_ptr).is_err() {
-        return Vec::new();
-    }
+    let lang_ptr = match language_for(lang) {
+        Ok(l) => l,
+        Err(_) => return Vec::new(),
+    };
+    if parser.set_language(&lang_ptr).is_err() { return Vec::new() }
     let Some(tree) = parser.parse(source, None) else { return Vec::new() };
     let root = tree.root_node();
 
@@ -606,12 +633,8 @@ fn extract_imports(_path: &Path, source: &str, lang: &str) -> Vec<String> {
         "php" => r#"
             (namespace_use_declaration) @imp
         "#,
-        "ruby" => r#" "#,
         "java" => r#"
             (import_declaration) @imp
-        "#,
-        "kotlin" => r#"
-            (import_header) @imp
         "#,
         "c" | "cpp" => r#"
             (preproc_include) @imp
@@ -619,17 +642,13 @@ fn extract_imports(_path: &Path, source: &str, lang: &str) -> Vec<String> {
         "csharp" => r#"
             (using_directive) @imp
         "#,
-        "bash" => r#" "#,
-        "sql" => r#" "#,
-        "html" => r#" "#,
         "css" => r#"
             (import_statement) @imp
         "#,
-        "markdown" => r#" "#,
         _ => return Vec::new(),
     };
 
-    let Ok(query) = Query::new(&lang_ptr.into(), query_src) else { return Vec::new() };
+    let Ok(query) = Query::new(&lang_ptr, query_src) else { return Vec::new() };
     let mut cursor = QueryCursor::new();
     let mut imports = Vec::new();
     let mut matches = cursor.matches(&query, root, source.as_bytes());
@@ -735,6 +754,29 @@ fn build_structure_summary(root: &Path) -> BiResult<String> {
         lines = truncated;
     }
     Ok(lines.join("\n"))
+}
+
+fn emit_progress(
+    state: &AppState,
+    phase: &str,
+    current: usize,
+    total: usize,
+    file: Option<String>,
+    chunks_so_far: usize,
+) {
+    if let Some(app) = &state.app {
+        let _ = app.emit(
+            "ingest:progress",
+            IngestProgress {
+                project_id: state.default_project_id.clone(),
+                phase: phase.to_string(),
+                current,
+                total,
+                file,
+                chunks_so_far,
+            },
+        );
+    }
 }
 
 #[allow(dead_code)]
