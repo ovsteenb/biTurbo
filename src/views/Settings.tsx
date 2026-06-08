@@ -1,12 +1,15 @@
 import { useMemo, useState } from "react";
 import { useApp } from "../lib/store";
-import { Terminal, Folder, Cpu, Copy, Check, FileCode2 } from "lucide-react";
+import { Terminal, Folder, Cpu, Copy, Check, FileCode2, Sun, Moon } from "lucide-react";
+import clsx from "clsx";
 
 export function Settings() {
   const stats = useApp((s) => s.stats);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const projects = useApp((s) => s.projects);
   const showToast = useApp((s) => s.showToast);
+  const theme = useApp((s) => s.theme);
+  const setTheme = useApp((s) => s.setTheme);
   const [copied, setCopied] = useState<string | null>(null);
 
   const project = projects.find((p) => p.id === currentProjectId);
@@ -90,6 +93,32 @@ ${end}`;
         <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted">
           {dataDir}
         </pre>
+      </Section>
+
+      <Section icon={theme === "dark" ? Moon : Sun} title="Appearance">
+        <p className="text-sm text-text-muted">
+          Pick the interface theme. Saved per device.
+        </p>
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            onClick={() => setTheme("dark")}
+            className={clsx(
+              "btn-outline",
+              theme === "dark" && "border-accent/50 bg-accent-soft text-text"
+            )}
+          >
+            <Moon size={13} /> Dark
+          </button>
+          <button
+            onClick={() => setTheme("light")}
+            className={clsx(
+              "btn-outline",
+              theme === "light" && "border-accent/50 bg-accent-soft text-text"
+            )}
+          >
+            <Sun size={13} /> Light
+          </button>
+        </div>
       </Section>
 
       <Section icon={Cpu} title="Embedding model">

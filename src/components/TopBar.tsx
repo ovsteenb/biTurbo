@@ -1,7 +1,9 @@
-import { Plus, Sparkles } from "lucide-react";
+import { Plus, Sparkles, Sun, Moon } from "lucide-react";
 import { useApp } from "../lib/store";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/api";
+import type { ConsolidateReport } from "../lib/types";
 
 export function TopBar() {
   const setQuickAddOpen = useApp((s) => s.setQuickAddOpen);
@@ -12,24 +14,35 @@ export function TopBar() {
   const refreshStats = useApp((s) => s.refreshStats);
   const refreshActivity = useApp((s) => s.refreshActivity);
   const showToast = useApp((s) => s.showToast);
+  const theme = useApp((s) => s.theme);
+  const toggleTheme = useApp((s) => s.toggleTheme);
   const [consolidating, setConsolidating] = useState(false);
 
   const currentProject = projects.find((p) => p.id === currentProjectId);
 
-  async function runConsolidate() {
-    setConsolidating(true);
-    try {
-      const r = await api.consolidate(currentProjectId);
+  useEffect(() => {
+    const unlistenP = listen<ConsolidateReport>("consolidate:done", (e) => {
+      const r = e.payload;
+      setConsolidating(false);
       showToast({
         kind: "ok",
         text: `Consolidated · ${r.decayed} decayed · ${r.merged} merged · ${r.duplicates_found} dupes`,
       });
-      await refreshStats();
-      await refreshActivity();
+      void refreshStats();
+      void refreshActivity();
+    });
+    return () => {
+      void unlistenP.then((fn) => fn());
+    };
+  }, [showToast, refreshStats, refreshActivity]);
+
+  async function runConsolidate() {
+    setConsolidating(true);
+    try {
+      await api.consolidate(currentProjectId);
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
-    } finally {
       setConsolidating(false);
+      showToast({ kind: "err", text: String(e) });
     }
   }
 
@@ -73,6 +86,15 @@ export function TopBar() {
       >
         <Sparkles size={14} className={consolidating ? "animate-pulse" : ""} />
         <span className="hidden sm:inline">Consolidate</span>
+      </button>
+
+      <button
+        onClick={toggleTheme}
+        className="btn-ghost"
+        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        aria-label="Toggle theme"
+      >
+        {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
       </button>
 
       <button

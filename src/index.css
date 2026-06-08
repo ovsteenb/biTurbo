@@ -2,14 +2,95 @@
 @tailwind components;
 @tailwind utilities;
 
+/* -------------------------------------------------------------------------- */
+/* Theme tokens                                                               */
+/* -------------------------------------------------------------------------- */
+
+:root {
+  /* Dark (default) */
+  --bg: #0F0E0C;
+  --surface: #181613;
+  --surface-2: #211E1A;
+  --surface-3: #2A2620;
+  --border: #322D26;
+  --border-subtle: #221F1B;
+  --text: #E8E2D6;
+  --text-muted: #94897A;
+  --text-dim: #6B6258;
+  --accent: #D4A574;
+  --accent-soft: rgba(212, 165, 116, 0.12);
+  --accent-glow: rgba(212, 165, 116, 0.25);
+  --success: #8FB87D;
+  --warning: #D4B574;
+  --danger: #C77B6E;
+  --selection-bg: rgba(212, 165, 116, 0.3);
+  --selection-fg: #fff;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: #2A2620;
+  --scrollbar-thumb-hover: #3a342d;
+  --shadow-modal: 0 20px 25px -5px rgb(0 0 0 / 0.5), 0 8px 10px -6px rgb(0 0 0 / 0.4);
+  --shadow-card: 0 1px 0 rgb(255 255 255 / 0.02) inset;
+  --backdrop: rgb(0 0 0 / 0.55);
+  /* RGB triplets for Tailwind alpha composition. */
+  --bg-rgb: 15 14 12;
+  --surface-rgb: 24 22 19;
+  --surface-2-rgb: 33 30 26;
+  --border-rgb: 50 45 38;
+  --text-rgb: 232 226 214;
+  --text-muted-rgb: 148 137 122;
+  --accent-rgb: 212 165 116;
+  --success-rgb: 143 184 125;
+  --warning-rgb: 212 181 116;
+  --danger-rgb: 199 123 110;
+  color-scheme: dark;
+}
+
+:root.light {
+  /* Warm off-white "paper" — same accent palette, just inverted surfaces. */
+  --bg: #F6F1E8;
+  --surface: #FFFCF5;
+  --surface-2: #F0E9DC;
+  --surface-3: #E6DCC9;
+  --border: #D9CFB8;
+  --border-subtle: #E5DCC8;
+  --text: #1F1B16;
+  --text-muted: #6B5F4B;
+  --text-dim: #998B72;
+  --accent: #B08550;
+  --accent-soft: rgba(176, 133, 80, 0.14);
+  --accent-glow: rgba(176, 133, 80, 0.28);
+  --success: #4F7F3D;
+  --warning: #9C7E2A;
+  --danger: #B05549;
+  --selection-bg: rgba(176, 133, 80, 0.25);
+  --selection-fg: #1F1B16;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: #D9CFB8;
+  --scrollbar-thumb-hover: #B8AB91;
+  --shadow-modal: 0 10px 30px -5px rgb(60 45 20 / 0.18), 0 4px 8px -2px rgb(60 45 20 / 0.10);
+  --shadow-card: 0 1px 0 rgb(255 255 255 / 0.6) inset;
+  --backdrop: rgb(60 45 20 / 0.30);
+  --bg-rgb: 246 241 232;
+  --surface-rgb: 255 252 245;
+  --surface-2-rgb: 240 233 220;
+  --border-rgb: 217 207 184;
+  --text-rgb: 31 27 22;
+  --text-muted-rgb: 107 95 75;
+  --accent-rgb: 176 133 80;
+  --success-rgb: 79 127 61;
+  --warning-rgb: 156 126 42;
+  --danger-rgb: 176 85 73;
+  color-scheme: light;
+}
+
 @layer base {
   html,
   body,
   #root {
     height: 100%;
     margin: 0;
-    background: #0F0E0C;
-    color: #E8E2D6;
+    background: var(--bg);
+    color: var(--text);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -21,8 +102,8 @@
   }
 
   ::selection {
-    background: rgba(212, 165, 116, 0.3);
-    color: #fff;
+    background: var(--selection-bg);
+    color: var(--selection-fg);
   }
 
   /* Custom scrollbar */
@@ -31,16 +112,16 @@
     height: 10px;
   }
   *::-webkit-scrollbar-track {
-    background: transparent;
+    background: var(--scrollbar-track);
   }
   *::-webkit-scrollbar-thumb {
-    background: #2A2620;
+    background: var(--scrollbar-thumb);
     border-radius: 8px;
     border: 2px solid transparent;
     background-clip: content-box;
   }
   *::-webkit-scrollbar-thumb:hover {
-    background: #3a342d;
+    background: var(--scrollbar-thumb-hover);
     background-clip: content-box;
   }
 }
@@ -92,5 +173,8 @@
   }
   .text-pretty {
     text-wrap: pretty;
+  }
+  .shadow-modal {
+    box-shadow: var(--shadow-modal);
   }
 }

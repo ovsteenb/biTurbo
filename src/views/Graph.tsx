@@ -1,16 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useApp } from "../lib/store";
+import { useApp, useContextMenu } from "../lib/store";
 import type { GraphNode, GraphEdge } from "../lib/types";
-import { Share2, Filter, Search, ZoomIn, ZoomOut, RefreshCw } from "lucide-react";
+import {
+  Share2,
+  Filter,
+  Search,
+  ZoomIn,
+  ZoomOut,
+  RefreshCw,
+  Copy,
+  ExternalLink,
+} from "lucide-react";
+import type { ContextMenuItem } from "../components/ContextMenu";
+import type {
+  LayoutRequest,
+  LayoutResult,
+  LayoutProgress,
+  LayoutError,
+} from "./layoutWorker";
 
-type Pos = { x: number; y: number; vx: number; vy: number };
+type Pos = { x: number; y: number };
 
-const KIND_COLORS: Record<string, { fill: string; stroke: string }> = {
+const NODE_KINDS = ["file", "function", "class", "struct"] as const;
+type NodeKind = (typeof NODE_KINDS)[number];
+
+const KIND_COLORS: Record<NodeKind, { fill: string; stroke: string }> = {
   file: { fill: "#D4A574", stroke: "#8a6b4a" },
   function: { fill: "#7DC4E4", stroke: "#3d7488" },
   class: { fill: "#C7A0E0", stroke: "#6d4d8a" },
   struct: { fill: "#E0C58C", stroke: "#8a7434" },
-  module: { fill: "#8FB87D", stroke: "#4d6e44" },
 };
 
 const EDGE_COLORS: Record<string, string> = {
@@ -20,40 +38,144 @@ const EDGE_COLORS: Record<string, string> = {
   extends: "#C7A0E0",
 };
 
+const LAYOUT_W = 1600;
+const LAYOUT_H = 1000;
+const LAYOUT_CX = LAYOUT_W / 2;
+const LAYOUT_CY = LAYOUT_H / 2;
+
 export function Graph() {
   const graph = useApp((s) => s.graph);
   const refreshGraph = useApp((s) => s.refreshGraph);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const showToast = useApp((s) => s.showToast);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
-  const [filter, setFilter] = useState<Set<string>>(
-    new Set(["file", "function", "class", "struct"])
-  );
+  const showMenu = useContextMenu();
+  const [filter, setFilter] = useState<Set<string>>(new Set(NODE_KINDS));
   const [query, setQuery] = useState("");
   const [hover, setHover] = useState<string | null>(null);
   const [posMap, setPosMap] = useState<Record<string, Pos>>({});
-  const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+  const [layoutMs, setLayoutMs] = useState<number | null>(null);
+  const [firstPaintMs, setFirstPaintMs] = useState<number | null>(null);
+  const [view, setView] = useState({ x: 0, y: 0, k: 0.5 });
   const [busy, setBusy] = useState(false);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const dragRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+  } | null>(null);
+  const [size, setSize] = useState({ w: 800, h: 600 });
 
-  // Re-layout when graph data changes.
   const data = useMemo(() => {
     if (!graph) return null;
     const visibleNodes = graph.nodes.filter((n) => filter.has(n.kind));
     const visibleIds = new Set(visibleNodes.map((n) => n.uid));
     const visibleEdges = graph.edges.filter(
-      (e) => visibleIds.has(e.from) && visibleIds.has(e.to)
+      (e) => visibleIds.has(e.from) && visibleIds.has(e.to),
     );
     return { nodes: visibleNodes, edges: visibleEdges };
   }, [graph, filter]);
 
   useEffect(() => {
-    if (!data || data.nodes.length === 0) return;
-    setPosMap(layout(data.nodes, data.edges));
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0].contentRect;
+      setSize({ w: Math.max(100, r.width), h: Math.max(100, r.height) });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  // Layout pipeline:
+  // 1. Render immediately at cheap seed positions (file circle + jittered
+  //    children). Always < 5ms even for 10k nodes.
+  // 2. Kick off the worker to refine via Barnes-Hut. Cancel any prior
+  //    in-flight request so we never apply a stale result to a new filter.
+  useEffect(() => {
+    if (!data || data.nodes.length === 0) {
+      setPosMap({});
+      setLayoutMs(null);
+      return;
+    }
+    const tSeed = performance.now();
+    const seed = computeSeedPositions(data.nodes);
+    setPosMap(seed);
+    setLayoutMs(Math.round(performance.now() - tSeed));
+    setFirstPaintMs(null);
+
+    const reqId = ++layoutReqSeq.current;
+    layoutWorkerRef.current?.postMessage({
+      type: "layout",
+      requestId: reqId,
+      nodes: data.nodes.map((n) => ({
+        uid: n.uid,
+        kind: n.kind,
+        file_path: n.file_path ?? null,
+        size: n.size,
+      })),
+      edges: data.edges.map((e) => ({ from: e.from, to: e.to })),
+      width: LAYOUT_W,
+      height: LAYOUT_H,
+      iterations: 120,
+      prevPositions: seed,
+    } satisfies LayoutRequest);
   }, [data]);
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size.w * dpr;
+    canvas.height = size.h * dpr;
+    canvas.style.width = `${size.w}px`;
+    canvas.style.height = `${size.h}px`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const t0 = performance.now();
+    drawScene(ctx, size, data, posMap, view, hover, query);
+    const t1 = performance.now();
+    if (firstPaintMs === null) {
+      setFirstPaintMs(Math.round(t1 - t0));
+      send(
+        "info",
+        `[graph] first paint · ${Math.round(t1 - t0)}ms · ${data?.nodes.length ?? 0} nodes`,
+      );
+    }
+  }, [size, data, posMap, view, hover, query, firstPaintMs]);
+
+  // Worker is module-level so we share one instance across renders and
+  // attach exactly one message handler.
+  useEffect(() => {
+    const w = ensureLayoutWorker();
+    layoutWorkerRef.current = w;
+    const onMessage = (ev: MessageEvent<LayoutResult | LayoutProgress | LayoutError>) => {
+      const m = ev.data;
+      if (!m) return;
+      // Drop stale results — a newer request superseded this one.
+      if (m.requestId !== layoutReqSeq.current) return;
+      if (m.type === "progress" || m.type === "result") {
+        setPosMap(m.positions as Record<string, Pos>);
+        if (m.type === "result") {
+          setLayoutMs(Math.round(m.elapsedMs));
+          send(
+            "info",
+            `[graph] layout refined · ${m.iterationsDone} iters · ${Math.round(m.elapsedMs)}ms`,
+          );
+        }
+      } else if (m.type === "error") {
+        send("error", `[graph] layout failed: ${m.message}`);
+      }
+    };
+    w.addEventListener("message", onMessage);
+    return () => w.removeEventListener("message", onMessage);
+  }, []);
+
   async function reload() {
+    setFirstPaintMs(null);
+    setLayoutMs(null);
     setBusy(true);
     try {
       await refreshGraph();
@@ -83,30 +205,7 @@ export function Graph() {
     );
   }
 
-  const matches = useMemo(() => {
-    if (!query.trim() || !data) return new Set<string>();
-    const q = query.toLowerCase();
-    return new Set(
-      data.nodes
-        .filter(
-          (n) =>
-            n.label.toLowerCase().includes(q) ||
-            (n.file_path ?? "").toLowerCase().includes(q)
-        )
-        .map((n) => n.uid)
-    );
-  }, [query, data]);
-
   const hoverNode = hover && data ? data.nodes.find((n) => n.uid === hover) : null;
-  const connectedToHover = useMemo(() => {
-    if (!hover || !data) return new Set<string>();
-    const s = new Set<string>([hover]);
-    for (const e of data.edges) {
-      if (e.from === hover) s.add(e.to);
-      if (e.to === hover) s.add(e.from);
-    }
-    return s;
-  }, [hover, data]);
 
   function nodeRadius(n: GraphNode): number {
     if (n.kind === "file") return 10 + Math.min(8, Math.sqrt(n.size));
@@ -116,13 +215,10 @@ export function Graph() {
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    setView((v) => ({ ...v, k: Math.max(0.2, Math.min(4, v.k * factor)) }));
+    setView((v) => ({ ...v, k: Math.max(0.1, Math.min(4, v.k * factor)) }));
   }
 
   function onMouseDown(e: React.MouseEvent) {
-    if ((e.target as Element).tagName !== "svg" && (e.target as Element).tagName !== "rect") {
-      return;
-    }
     dragRef.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
   }
 
@@ -130,124 +226,122 @@ export function Graph() {
     if (!dragRef.current) return;
     const dx = e.clientX - dragRef.current.x;
     const dy = e.clientY - dragRef.current.y;
-    setView((v) => ({ ...v, x: dragRef.current!.vx + dx, y: dragRef.current!.vy + dy }));
+    setView((v) => ({
+      ...v,
+      x: dragRef.current!.vx + dx,
+      y: dragRef.current!.vy + dy,
+    }));
   }
 
   function onMouseUp() {
     dragRef.current = null;
   }
 
+  function hitTest(mx: number, my: number): string | null {
+    if (!data) return null;
+    const wx = (mx - view.x) / view.k;
+    const wy = (my - view.y) / view.k;
+    let best: { uid: string; d2: number } | null = null;
+    for (const n of data.nodes) {
+      const p = posMap[n.uid];
+      if (!p) continue;
+      const r = nodeRadius(n);
+      const dx = wx - p.x;
+      const dy = wy - p.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= r * r && (!best || d2 < best.d2)) {
+        best = { uid: n.uid, d2 };
+      }
+    }
+    return best?.uid ?? null;
+  }
+
+  function onMouseMoveHover(e: React.MouseEvent) {
+    if (dragRef.current) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const uid = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    setHover(uid);
+  }
+
+  function onClick(e: React.MouseEvent) {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const uid = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    if (!uid || !data) return;
+    const n = data.nodes.find((x) => x.uid === uid);
+    if (n && n.kind !== "file" && n.file_path) {
+      setSelected(n.uid);
+    }
+  }
+
+  function onContextMenu(e: React.MouseEvent) {
+    e.preventDefault();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const uid = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    if (!uid || !data) return;
+    const n = data.nodes.find((x) => x.uid === uid);
+    if (!n) return;
+    const items: ContextMenuItem[] = [
+      {
+        label: "Open memory",
+        icon: <ExternalLink size={12} />,
+        disabled: n.kind === "file" || !n.file_path,
+        onClick: () => {
+          if (n.kind !== "file" && n.file_path) setSelected(n.uid);
+        },
+      },
+      {
+        label: "Copy UID",
+        icon: <Copy size={12} />,
+        onClick: async () => {
+          try {
+            await navigator.clipboard.writeText(n.uid);
+            showToast({ kind: "ok", text: "UID copied" });
+          } catch {
+            showToast({ kind: "err", text: "Clipboard blocked" });
+          }
+        },
+      },
+      {
+        label: "Copy label",
+        icon: <Copy size={12} />,
+        onClick: async () => {
+          try {
+            await navigator.clipboard.writeText(n.label);
+            showToast({ kind: "ok", text: "Label copied" });
+          } catch {
+            showToast({ kind: "err", text: "Clipboard blocked" });
+          }
+        },
+      },
+    ];
+    showMenu(e.clientX, e.clientY, items);
+  }
+
   function resetView() {
-    setView({ x: 0, y: 0, k: 1 });
+    setView({ x: 0, y: 0, k: 0.5 });
   }
 
   return (
     <div className="flex h-full">
       {/* Canvas */}
-      <div className="relative flex-1 overflow-hidden bg-bg">
-        <svg
-          ref={svgRef}
-          className="h-full w-full cursor-grab active:cursor-grabbing"
+      <div
+        ref={containerRef}
+        className="relative flex-1 overflow-hidden bg-bg"
+      >
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 cursor-grab active:cursor-grabbing"
           onWheel={onWheel}
           onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
+          onMouseMove={(e) => {
+            onMouseMove(e);
+            onMouseMoveHover(e);
+          }}
           onMouseUp={onMouseUp}
           onMouseLeave={onMouseUp}
-        >
-          <defs>
-            {Object.entries(EDGE_COLORS).map(([k, c]) => (
-              <marker
-                key={k}
-                id={`arrow-${k}`}
-                viewBox="0 0 10 10"
-                refX="9"
-                refY="5"
-                markerWidth="5"
-                markerHeight="5"
-                orient="auto"
-              >
-                <path d="M0,0 L10,5 L0,10 Z" fill={c} opacity="0.7" />
-              </marker>
-            ))}
-          </defs>
-          <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
-            <rect
-              x={-10000}
-              y={-10000}
-              width={20000}
-              height={20000}
-              fill="transparent"
-            />
-            {data?.edges.map((e, i) => {
-              const a = posMap[e.from];
-              const b = posMap[e.to];
-              if (!a || !b) return null;
-              const isHighlighted = hover && (e.from === hover || e.to === hover);
-              const dimmed = hover && !isHighlighted;
-              const color = EDGE_COLORS[e.edge_type] ?? "#3a342d";
-              return (
-                <line
-                  key={i}
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
-                  stroke={color}
-                  strokeWidth={isHighlighted ? 1.5 : 0.6}
-                  opacity={dimmed ? 0.1 : isHighlighted ? 0.9 : 0.4}
-                  markerEnd={e.edge_type === "imports" ? `url(#arrow-imports)` : undefined}
-                />
-              );
-            })}
-            {data?.nodes.map((n) => {
-              const p = posMap[n.uid];
-              if (!p) return null;
-              const r = nodeRadius(n);
-              const colors = KIND_COLORS[n.kind] ?? KIND_COLORS.function;
-              const isHover = hover === n.uid;
-              const isMatch = matches.has(n.uid);
-              const dimmed = hover && !isHover && !connectedToHover.has(n.uid);
-              const faded = query.trim() && !isMatch;
-              return (
-                <g
-                  key={n.uid}
-                  transform={`translate(${p.x},${p.y})`}
-                  onMouseEnter={() => setHover(n.uid)}
-                  onMouseLeave={() => setHover(null)}
-                  onClick={() => {
-                    if (n.kind !== "file" && n.file_path) {
-                      setSelected(n.uid);
-                    }
-                  }}
-                  style={{ cursor: n.kind !== "file" ? "pointer" : "default" }}
-                  opacity={dimmed || faded ? 0.15 : 1}
-                >
-                  <circle
-                    r={r + 3}
-                    fill={isHover || isMatch ? colors.stroke : "transparent"}
-                    opacity={isHover || isMatch ? 0.3 : 0}
-                  />
-                  <circle
-                    r={r}
-                    fill={colors.fill}
-                    stroke={colors.stroke}
-                    strokeWidth={n.kind === "file" ? 2 : 1}
-                  />
-                  {isHover && (
-                    <text
-                      y={-r - 8}
-                      textAnchor="middle"
-                      className="fill-text"
-                      style={{ fontSize: 11, fontFamily: "Inter, system-ui" }}
-                    >
-                      {n.label}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-          </g>
-        </svg>
+          onClick={onClick}
+          onContextMenu={onContextMenu}
+        />
 
         {/* Controls */}
         <div className="pointer-events-none absolute inset-0 flex flex-col">
@@ -260,6 +354,16 @@ export function Graph() {
             <span className="font-mono text-[10px] text-text-dim">
               · {data?.nodes.length ?? 0} nodes · {data?.edges.length ?? 0} edges
             </span>
+            {layoutMs !== null && (
+              <span className="font-mono text-[10px] text-success">
+                · layout {layoutMs}ms
+              </span>
+            )}
+            {firstPaintMs !== null && (
+              <span className="font-mono text-[10px] text-success">
+                · paint {firstPaintMs}ms
+              </span>
+            )}
             <div className="flex-1" />
             <div className="relative">
               <Search
@@ -290,7 +394,7 @@ export function Graph() {
               <ZoomIn size={14} />
             </button>
             <button
-              onClick={() => setView((v) => ({ ...v, k: Math.max(0.2, v.k * 0.83) }))}
+              onClick={() => setView((v) => ({ ...v, k: Math.max(0.1, v.k * 0.83) }))}
               className="btn-outline h-8 w-8 p-0"
               title="Zoom out"
             >
@@ -308,7 +412,7 @@ export function Graph() {
             <span className="text-[10px] uppercase tracking-widest">Node kinds</span>
           </div>
           <div className="space-y-1.5">
-            {(["file", "function", "class", "struct"] as const).map((k) => (
+            {NODE_KINDS.map((k) => (
               <label
                 key={k}
                 className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-surface-2"
@@ -366,7 +470,7 @@ export function Graph() {
             <div className="mb-1.5 flex items-center gap-2">
               <span
                 className="h-2 w-2 rounded-full"
-                style={{ background: KIND_COLORS[hoverNode.kind]?.fill }}
+                style={{ background: KIND_COLORS[hoverNode.kind as NodeKind]?.fill }}
               />
               <span className="text-[10px] uppercase tracking-widest text-text-dim">
                 {hoverNode.kind}
@@ -387,8 +491,8 @@ export function Graph() {
           <ul className="ml-3 list-disc space-y-0.5">
             <li>Drag to pan, wheel to zoom</li>
             <li>Click a function/struct to open detail</li>
+            <li>Right-click any node for actions</li>
             <li>Hover to highlight connections</li>
-            <li>File nodes are containers, not clickable</li>
           </ul>
         </div>
       </div>
@@ -396,123 +500,208 @@ export function Graph() {
   );
 }
 
-// Simple force-directed layout. ~150 LoC. Good enough for hundreds of nodes.
-function layout(
-  nodes: GraphNode[],
-  edges: GraphEdge[]
-): Record<string, Pos> {
-  const W = 1200;
-  const H = 800;
-  const cx = W / 2;
-  const cy = H / 2;
+// ───────── Drawing ─────────
+function drawScene(
+  ctx: CanvasRenderingContext2D,
+  size: { w: number; h: number },
+  data: { nodes: GraphNode[]; edges: GraphEdge[] } | null,
+  posMap: Record<string, Pos>,
+  view: { x: number; y: number; k: number },
+  hover: string | null,
+  query: string,
+) {
+  ctx.clearRect(0, 0, size.w, size.h);
 
-  // Initial: file nodes on a circle, others near their file.
-  const files = nodes.filter((n) => n.kind === "file");
-  const fileRadius = Math.min(W, H) * 0.32;
-  const filePos: Record<string, { x: number; y: number }> = {};
-  files.forEach((f, i) => {
-    const ang = (i / Math.max(1, files.length)) * Math.PI * 2;
-    filePos[f.uid] = {
+  if (!data) return;
+
+  // Compute visible world rectangle for viewport culling.
+  const wx0 = -view.x / view.k;
+  const wy0 = -view.y / view.k;
+  const wx1 = (size.w - view.x) / view.k;
+  const wy1 = (size.h - view.y) / view.k;
+  const pad = 40;
+  const inView = (x: number, y: number, r: number) =>
+    x + r >= wx0 - pad &&
+    x - r <= wx1 + pad &&
+    y + r >= wy0 - pad &&
+    y - r <= wy1 + pad;
+
+  const nodeById = new Map(data.nodes.map((n) => [n.uid, n]));
+
+  // Edges first (so they sit under nodes).
+  for (const e of data.edges) {
+    const a = posMap[e.from];
+    const b = posMap[e.to];
+    if (!a || !b) continue;
+    const aVisible = inView(a.x, a.y, 20);
+    const bVisible = inView(b.x, b.y, 20);
+    if (!aVisible && !bVisible) continue;
+    const aNode = nodeById.get(e.from);
+    const bNode = nodeById.get(e.to);
+    if (!aNode || !bNode) continue;
+    const isHighlighted = hover === e.from || hover === e.to;
+    const dimmed = hover && !isHighlighted;
+    const color = EDGE_COLORS[e.edge_type] ?? "#3a342d";
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = dimmed ? 0.1 : isHighlighted ? 0.9 : 0.4;
+    ctx.lineWidth = (isHighlighted ? 1.5 : 0.6) * Math.max(0.5, view.k);
+    ctx.beginPath();
+    ctx.moveTo(view.x + a.x * view.k, view.y + a.y * view.k);
+    ctx.lineTo(view.x + b.x * view.k, view.y + b.y * view.k);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Nodes.
+  const q = query.trim().toLowerCase();
+  for (const n of data.nodes) {
+    const p = posMap[n.uid];
+    if (!p) continue;
+    const r = nodeRadius(n);
+    if (!inView(p.x, p.y, r)) continue;
+    const colors = KIND_COLORS[n.kind as NodeKind] ?? KIND_COLORS.function;
+    const isHover = hover === n.uid;
+    const isMatch = q && (n.label.toLowerCase().includes(q) ||
+      (n.file_path ?? "").toLowerCase().includes(q));
+    const faded = q && !isMatch;
+    const dimmed = hover && !isHover;
+    ctx.globalAlpha = faded || dimmed ? 0.18 : 1;
+    if (isHover || isMatch) {
+      ctx.fillStyle = colors.stroke;
+      ctx.globalAlpha = (faded || dimmed ? 0.18 : 0.3);
+      ctx.beginPath();
+      ctx.arc(
+        view.x + p.x * view.k,
+        view.y + p.y * view.k,
+        (r + 3) * view.k,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+      ctx.globalAlpha = faded || dimmed ? 0.18 : 1;
+    }
+    ctx.fillStyle = colors.fill;
+    ctx.strokeStyle = colors.stroke;
+    ctx.lineWidth = (n.kind === "file" ? 2 : 1) * Math.max(0.5, view.k);
+    ctx.beginPath();
+    ctx.arc(view.x + p.x * view.k, view.y + p.y * view.k, r * view.k, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    if (isHover) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = cssVar("--text", "#E8E2D6");
+      ctx.font = `${11 * view.k}px Inter, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(
+        n.label,
+        view.x + p.x * view.k,
+        view.y + (p.y - r - 6) * view.k,
+      );
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function nodeRadius(n: GraphNode): number {
+  if (n.kind === "file") return 10 + Math.min(8, Math.sqrt(n.size));
+  return 4 + Math.min(6, Math.log2(n.size + 1) * 1.5);
+}
+
+function cssVar(name: string, fallback: string): string {
+  if (typeof document === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+// ───────── Seed positions (instant, no force) ─────────
+// File nodes on a circle, non-files jittered near their parent file.
+// Hash-based deterministic jitter so the layout is stable across reloads.
+function computeSeedPositions(nodes: GraphNode[]): Record<string, Pos> {
+  const cx = LAYOUT_CX;
+  const cy = LAYOUT_CY;
+  const fileRadius = Math.min(LAYOUT_W, LAYOUT_H) * 0.32;
+
+  const filePos: Record<string, Pos> = {};
+  let fIdx = 0;
+  for (const n of nodes) {
+    if (n.kind !== "file") continue;
+    const ang = (fIdx / Math.max(1, countKind(nodes, "file"))) * Math.PI * 2;
+    filePos[n.uid] = {
       x: cx + Math.cos(ang) * fileRadius,
       y: cy + Math.sin(ang) * fileRadius,
     };
-  });
+    fIdx++;
+  }
+  const pathToFile = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.kind === "file" && n.file_path && !pathToFile.has(n.file_path)) {
+      pathToFile.set(n.file_path, n.uid);
+    }
+  }
 
-  const pos: Record<string, Pos> = {};
+  const out: Record<string, Pos> = {};
   for (const n of nodes) {
     if (n.kind === "file") {
-      const fp = filePos[n.uid];
-      pos[n.uid] = { x: fp.x, y: fp.y, vx: 0, vy: 0 };
+      out[n.uid] = filePos[n.uid];
     } else {
-      // Start near the file (best effort)
-      const fileUid = nodes.find(
-        (m) =>
-          m.kind === "file" &&
-          n.file_path &&
-          m.file_path === n.file_path
-      )?.uid;
-      const fp = fileUid ? filePos[fileUid] : { x: cx, y: cy };
-      const ang = Math.random() * Math.PI * 2;
-      const r = 30 + Math.random() * 30;
-      pos[n.uid] = {
-        x: fp.x + Math.cos(ang) * r,
-        y: fp.y + Math.sin(ang) * r,
-        vx: 0,
-        vy: 0,
-      };
+      const fp = (n.file_path && pathToFile.get(n.file_path)) || null;
+      const base = fp ? filePos[fp] : { x: cx, y: cy };
+      const h = hash32(n.uid);
+      const ang = ((h & 0xffff) / 0xffff) * Math.PI * 2;
+      const r = 30 + (((h >>> 16) & 0xffff) / 0xffff) * 30;
+      out[n.uid] = { x: base.x + Math.cos(ang) * r, y: base.y + Math.sin(ang) * r };
     }
   }
+  return out;
+}
 
-  const idx = new Map(nodes.map((n) => [n.uid, n]));
-  const adj: [string, string][] = edges.map((e) => [e.from, e.to]);
+function countKind(nodes: GraphNode[], kind: string): number {
+  let n = 0;
+  for (const x of nodes) if (x.kind === kind) n++;
+  return n;
+}
 
-  // Run ~300 iterations of force simulation.
-  const iterations = 300;
-  const repulsion = 4500;
-  const springLen = 70;
-  const springK = 0.04;
-  const centerK = 0.005;
-  const damping = 0.82;
-
-  for (let it = 0; it < iterations; it++) {
-    // Repulsion (O(n^2) but n is small)
-    const ids = Object.keys(pos);
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const a = pos[ids[i]];
-        const b = pos[ids[j]];
-        const dx = a.x - b.x;
-        const dy = a.y - b.y;
-        let dist2 = dx * dx + dy * dy;
-        if (dist2 < 1) dist2 = 1;
-        const dist = Math.sqrt(dist2);
-        const nodeA = idx.get(ids[i])!;
-        const nodeB = idx.get(ids[j])!;
-        // Pin files a bit so they don't fly around.
-        const massA = nodeA.kind === "file" ? 8 : 1;
-        const massB = nodeB.kind === "file" ? 8 : 1;
-        const f = repulsion / dist2;
-        const fx = (dx / dist) * f;
-        const fy = (dy / dist) * f;
-        a.vx += (fx / massA) * 0.5;
-        a.vy += (fy / massA) * 0.5;
-        b.vx -= (fx / massB) * 0.5;
-        b.vy -= (fy / massB) * 0.5;
-      }
-    }
-    // Spring along edges
-    for (const [u, v] of adj) {
-      const a = pos[u];
-      const b = pos[v];
-      if (!a || !b) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const diff = dist - springLen;
-      const f = diff * springK;
-      a.vx += (dx / dist) * f;
-      a.vy += (dy / dist) * f;
-      b.vx -= (dx / dist) * f;
-      b.vy -= (dy / dist) * f;
-    }
-    // Centering
-    for (const id of ids) {
-      const p = pos[id];
-      p.vx += (cx - p.x) * centerK;
-      p.vy += (cy - p.y) * centerK;
-    }
-    // Integrate + damp + clamp
-    for (const id of ids) {
-      const p = pos[id];
-      p.vx *= damping;
-      p.vy *= damping;
-      p.x += p.vx;
-      p.y += p.vy;
-      // Clamp to canvas
-      p.x = Math.max(-W, Math.min(2 * W, p.x));
-      p.y = Math.max(-H, Math.min(2 * H, p.y));
-    }
+function hash32(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
+  return h >>> 0;
+}
 
-  return pos;
+// ───────── Web Worker plumbing ─────────
+// One worker, lazily spawned. Cached on `window` so HMR doesn't double-spawn.
+function ensureLayoutWorker(): Worker {
+  const w = window as unknown as { __biturboLayoutWorker?: Worker };
+  if (w.__biturboLayoutWorker) return w.__biturboLayoutWorker;
+  const worker = new Worker(new URL("./layoutWorker.ts", import.meta.url), {
+    type: "module",
+    name: "biturbo-layout",
+  });
+  w.__biturboLayoutWorker = worker;
+  return worker;
+}
+
+const layoutReqSeq = { current: 0 };
+const layoutWorkerRef: { current: Worker | null } = { current: null };
+
+// Send log via the same Tauri channel main.tsx uses.
+function send(level: "info" | "warn" | "error", ...args: unknown[]) {
+  try {
+    const msg = args
+      .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+      .join(" ");
+    window.__TAURI__?.invoke("log_frontend", { level, message: msg });
+  } catch {
+    /* ignore */
+  }
+}
+
+declare global {
+  interface Window {
+    __TAURI__?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> };
+  }
 }

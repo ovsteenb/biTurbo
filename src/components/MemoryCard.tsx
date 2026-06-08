@@ -2,23 +2,45 @@ import type { Memory } from "../lib/types";
 import { MEM_TYPE_META, timeAgo, importanceDots } from "../lib/format";
 import { FileCode2, Hash } from "lucide-react";
 import clsx from "clsx";
+import { memo } from "react";
+import type { ContextMenuItem } from "./ContextMenu";
+import { useContextMenu } from "../lib/store";
 
-export function MemoryCard({
-  memory,
-  active,
-  onClick,
-}: {
+interface MemoryCardProps {
   memory: Memory;
   active?: boolean;
   onClick?: () => void;
-}) {
+  onContextMenu?: (e: React.MouseEvent) => void;
+  contextMenuItems?: ContextMenuItem[];
+}
+
+export const MemoryCard = memo(function MemoryCard({
+  memory,
+  active,
+  onClick,
+  onContextMenu,
+  contextMenuItems,
+}: MemoryCardProps) {
   const meta = MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact;
   const dots = importanceDots(memory.importance);
   const isCode = memory.mem_type === "code";
 
+  const showMenu = useContextMenu();
+  const handleContext =
+    onContextMenu ??
+    (contextMenuItems
+      ? (e: React.MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          showMenu(e.clientX, e.clientY, contextMenuItems);
+        }
+      : undefined);
+
   return (
-    <div onClick={onClick} className={clsx("memory-card", active && "active")}>
-      {/* Top row: type badge + meta */}
+    <div
+      onClick={onClick}
+      onContextMenu={handleContext}
+      className={clsx("memory-card", active && "active")}>
       <div className="mb-2 flex items-center gap-2">
         <span
           className={clsx(
@@ -40,14 +62,12 @@ export function MemoryCard({
         </span>
       </div>
 
-      {/* Content preview */}
       <div className="line-clamp-3 text-sm leading-relaxed text-text text-pretty">
         {memory.content}
       </div>
 
-      {/* Code location */}
       {isCode && memory.file_path && (
-        <div className="mt-2 flex items-center gap-1.5 font-mono text-[11px] text-orange-300/80">
+        <div className="code-callout mt-2 flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-[11px]">
           <FileCode2 size={11} />
           <span className="truncate">
             {memory.file_path.split("/").slice(-2).join("/")}
@@ -56,7 +76,6 @@ export function MemoryCard({
         </div>
       )}
 
-      {/* Footer: tags + importance + source */}
       <div className="mt-3 flex items-center gap-2 text-[11px] text-text-muted">
         {memory.tags.slice(0, 3).map((t) => (
           <span key={t} className="inline-flex items-center gap-1 text-text-dim">
@@ -86,4 +105,4 @@ export function MemoryCard({
       </div>
     </div>
   );
-}
+});

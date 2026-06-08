@@ -1,6 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  darkMode: ["class", ":root.light"],
   theme: {
     extend: {
       fontFamily: {
@@ -9,23 +10,25 @@ export default {
         mono: ["JetBrains Mono", "ui-monospace", "monospace"],
       },
       colors: {
-        bg: "#0F0E0C",
-        surface: "#181613",
-        "surface-2": "#211E1A",
-        "surface-3": "#2A2620",
-        border: "#322D26",
-        "border-subtle": "#221F1B",
-        text: "#E8E2D6",
-        "text-muted": "#94897A",
-        "text-dim": "#6B6258",
+        // All theme colors flow through CSS variables defined in index.css.
+        // Default (dark) values are on :root; light overrides are on :root.light.
+        // RGB-triplet vars let Tailwind's `bg-accent/40` alpha compositing work.
+        bg: "rgb(var(--bg-rgb) / <alpha-value>)",
+        surface: "rgb(var(--surface-rgb) / <alpha-value>)",
+        "surface-2": "rgb(var(--surface-2-rgb) / <alpha-value>)",
+        border: "rgb(var(--border-rgb) / <alpha-value>)",
+        "border-subtle": "rgb(var(--border-rgb) / <alpha-value>)",
+        text: "rgb(var(--text-rgb) / <alpha-value>)",
+        "text-muted": "rgb(var(--text-muted-rgb) / <alpha-value>)",
+        "text-dim": "rgb(var(--text-muted-rgb) / <alpha-value>)",
         accent: {
-          DEFAULT: "#D4A574",
-          soft: "rgba(212, 165, 116, 0.12)",
-          glow: "rgba(212, 165, 116, 0.25)",
+          DEFAULT: "rgb(var(--accent-rgb) / <alpha-value>)",
+          soft: "var(--accent-soft)",
+          glow: "var(--accent-glow)",
         },
-        success: "#8FB87D",
-        warning: "#D4B574",
-        danger: "#C77B6E",
+        success: "rgb(var(--success-rgb) / <alpha-value>)",
+        warning: "rgb(var(--warning-rgb) / <alpha-value>)",
+        danger: "rgb(var(--danger-rgb) / <alpha-value>)",
       },
       keyframes: {
         pulse_dot: {

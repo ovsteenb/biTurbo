@@ -201,7 +201,7 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                 require_project(p)?;
                 consolidate::consolidate(state, Some(p))?
             } else {
-                crate::scheduler::run_now(state)?
+                crate::scheduler::run_now_blocking(state)?
             };
             text(&serde_json::to_string_pretty(&r)?)
         }
@@ -370,6 +370,7 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"get_memory","description":"Fetch one memory by uid.","inputSchema":{"type":"object","required":["uid"],"properties":{"uid":{"type":"string"}}}},
 {"name":"search","description":"Semantic search. project_id scopes to one project. mem_type filters. k=top-N (default 10).","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
 {"name":"list","description":"List memories with optional filters. Newest first. Default 50.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"},"mem_type":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"}}}},
+{"name":"list_tags","description":"List tags for a project with usage counts. Newest first.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}},"required":["project_id"]}},
 {"name":"recall_for_context","description":"Build a <biTurboContext> block of top-k relevant memories. Use before answering.","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
 {"name":"list_projects","description":"List all projects.","inputSchema":{"type":"object","properties":{}}},
 {"name":"get_project","description":"Fetch one project by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
@@ -377,6 +378,7 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"delete_project","description":"Delete a project and all its memories. 'default' cannot be deleted.","inputSchema":{"type":"object","required":["project_id"],"properties":{"project_id":{"type":"string"}}}},
 {"name":"ingest_project","description":"Index a code directory via tree-sitter (rust/typescript/javascript/python/go).","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
 {"name":"consolidate","description":"Run memory maintenance: decay, dedup (cosine >= 0.95), merge.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
+{"name":"consolidate_status","description":"Status of the background consolidate scheduler (running/idle, last run, next run).","inputSchema":{"type":"object","properties":{}}},
 {"name":"stats","description":"Global stats.","inputSchema":{"type":"object","properties":{}}},
 {"name":"bootstrap","description":"One-call page mount: stats + projects + recent + tags + agents + consolidate status.","inputSchema":{"type":"object","properties":{}}},
 {"name":"recent_activity","description":"Recent activity entries.","inputSchema":{"type":"object","properties":{"limit":{"type":"number"}}}},

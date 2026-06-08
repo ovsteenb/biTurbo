@@ -5,8 +5,13 @@ import {
   Share2,
   Bot,
   Settings as SettingsIcon,
+  Check,
+  Trash2,
+  FileSearch,
 } from "lucide-react";
-import { useApp } from "../lib/store";
+import { useApp, useConfirm, useContextMenu } from "../lib/store";
+import { api } from "../lib/api";
+import type { ContextMenuItem } from "./ContextMenu";
 import clsx from "clsx";
 
 const nav = [
@@ -99,7 +104,13 @@ export function Sidebar() {
 function Logo() {
   return (
     <div className="relative h-7 w-7 shrink-0">
-      <div className="absolute inset-0 rounded-md bg-gradient-to-br from-accent to-amber-700" />
+      <div
+        className="absolute inset-0 rounded-md"
+        style={{
+          background:
+            "linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #000 45%) 100%)",
+        }}
+      />
       <div className="absolute inset-[3px] rounded-[5px] bg-bg" />
       <div className="absolute inset-[3px] flex items-center justify-center">
         <div className="h-2 w-2 rounded-full bg-accent" />
@@ -113,6 +124,81 @@ function ProjectList() {
   const currentProjectId = useApp((s) => s.currentProjectId);
   const setCurrentProjectId = useApp((s) => s.setCurrentProjectId);
   const setView = useApp((s) => s.setView);
+  const showToast = useApp((s) => s.showToast);
+  const refreshProjects = useApp((s) => s.refreshProjects);
+  const refreshStats = useApp((s) => s.refreshStats);
+  const refreshGraph = useApp((s) => s.refreshGraph);
+  const showMenu = useContextMenu();
+  const confirm = useConfirm();
+
+  async function ingestNow(projectId: string, rootPath: string) {
+    try {
+      await api.ingestProject(projectId, rootPath);
+      showToast({ kind: "ok", text: `Indexing ${projectId}…` });
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function deleteProject(id: string, name: string) {
+    const ok = await confirm({
+      title: `Delete project "${name}"?`,
+      body: (
+        <>
+          All memories and the code index for <b>{name}</b> will be
+          permanently removed. This cannot be undone.
+        </>
+      ),
+      confirmLabel: "Delete project",
+    });
+    if (!ok) return;
+    try {
+      await api.deleteProject(id);
+      await Promise.all([refreshProjects(), refreshStats(), refreshGraph().catch(() => {})]);
+      showToast({ kind: "ok", text: "Deleted" });
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
+    }
+  }
+
+  function buildMenu(
+    e: React.MouseEvent,
+    p: { id: string; name: string; root_path: string | null },
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    const items: ContextMenuItem[] = [
+      {
+        label: "Set as current",
+        icon: <Check size={12} />,
+        disabled: p.id === currentProjectId,
+        onClick: () => setCurrentProjectId(p.id),
+      },
+      {
+        label: "Open memories",
+        icon: <Brain size={12} />,
+        onClick: () => {
+          setCurrentProjectId(p.id);
+          setView("memories");
+        },
+      },
+      {
+        label: "Ingest now",
+        icon: <FileSearch size={12} />,
+        disabled: !p.root_path,
+        onClick: () => p.root_path && void ingestNow(p.id, p.root_path),
+      },
+      { label: "", separator: true, onClick: () => {} },
+      {
+        label: "Delete",
+        icon: <Trash2 size={12} />,
+        danger: true,
+        disabled: p.id === "default",
+        onClick: () => void deleteProject(p.id, p.name),
+      },
+    ];
+    showMenu(e.clientX, e.clientY, items);
+  }
 
   return (
     <div className="space-y-0.5">
@@ -125,6 +211,7 @@ function ProjectList() {
               setCurrentProjectId(p.id);
               setView("memories");
             }}
+            onContextMenu={(e) => buildMenu(e, p)}
             className={clsx(
               "group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition",
               active

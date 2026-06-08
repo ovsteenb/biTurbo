@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Memory } from "../lib/types";
 import { MEM_TYPE_META, timeAgo, shortDate, importanceDots } from "../lib/format";
 import { api } from "../lib/api";
-import { useApp } from "../lib/store";
+import { useApp, useConfirm } from "../lib/store";
 import { X, Trash2, Edit3, Save, FileCode2, Hash } from "lucide-react";
 import clsx from "clsx";
 
@@ -16,6 +16,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
   const refreshStats = useApp((s) => s.refreshStats);
   const showToast = useApp((s) => s.showToast);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
+  const confirm = useConfirm();
 
   useEffect(() => {
     setDraft(memory.content);
@@ -63,12 +64,16 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
   }
 
   async function forget() {
-    if (!confirm("Forget this memory? It will be removed from the vector index too.")) return;
+    const ok = await confirm({
+      title: "Forget this memory?",
+      body: "It will be removed from the vector index too. This cannot be undone.",
+      confirmLabel: "Forget",
+    });
+    if (!ok) return;
     try {
       await api.forget(memory.uid);
       setSelected(null);
-      await refreshMemories();
-      await refreshStats();
+      await Promise.all([refreshMemories(), refreshStats()]);
       showToast({ kind: "ok", text: "Forgotten" });
     } catch (e) {
       showToast({ kind: "err", text: String(e) });

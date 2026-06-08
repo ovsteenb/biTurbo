@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useApp } from "../lib/store";
+import { useApp, useConfirm } from "../lib/store";
 import { api } from "../lib/api";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -23,6 +23,7 @@ export function Projects() {
   const showToast = useApp((s) => s.showToast);
   const setCurrentProjectId = useApp((s) => s.setCurrentProjectId);
   const currentProjectId = useApp((s) => s.currentProjectId);
+  const confirm = useConfirm();
 
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -95,13 +96,13 @@ export function Projects() {
       chunks_so_far: 0,
     });
     try {
-      const r = await api.ingestProject(projectId, root);
+      const job = await api.ingestProject(projectId, root);
       await refreshProjects();
       await refreshStats();
       await refreshGraph().catch(() => {});
       showToast({
         kind: "ok",
-        text: `Indexed ${r.files_indexed} files · ${r.chunks_indexed} chunks · ${r.edges_created} edges`,
+        text: `Indexing ${projectId} · job ${job.job_id.slice(0, 8)}…`,
       });
     } catch (e) {
       showToast({ kind: "err", text: String(e) });
@@ -110,8 +111,18 @@ export function Projects() {
     }
   }
 
-  async function remove(id: string) {
-    if (!confirm(`Delete project "${id}" and all its memories?`)) return;
+  async function remove(id: string, name: string) {
+    const ok = await confirm({
+      title: `Delete project "${name}"?`,
+      body: (
+        <>
+          All memories and the code index for <b>{name}</b> will be
+          permanently removed. This cannot be undone.
+        </>
+      ),
+      confirmLabel: "Delete project",
+    });
+    if (!ok) return;
     setBusy(id);
     try {
       await api.deleteProject(id);
@@ -429,7 +440,7 @@ export function Projects() {
                 </button>
                 {p.id !== "default" && (
                   <button
-                    onClick={() => remove(p.id)}
+                    onClick={() => remove(p.id, p.name)}
                     disabled={busy === p.id}
                     className="btn-ghost text-danger hover:bg-danger/10"
                     title="Delete project"

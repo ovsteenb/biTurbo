@@ -1,18 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
-import { useApp } from "../lib/store";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useApp, useConfirm } from "../lib/store";
 import { api } from "../lib/api";
 import { MemoryCard } from "../components/MemoryCard";
 import { MemoryDetail } from "../components/MemoryDetail";
-import { Search, X, FileCode2, Hash } from "lucide-react";
+import { Search, X, FileCode2, Hash, ExternalLink, Copy, Trash2 } from "lucide-react";
+import type { ContextMenuItem } from "../components/ContextMenu";
 import clsx from "clsx";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
+const SEARCH_DEBOUNCE_MS = 180;
 
 export function Memories() {
   const memories = useApp((s) => s.memories);
   const selectedUid = useApp((s) => s.selectedMemoryUid);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
   const currentProjectId = useApp((s) => s.currentProjectId);
+  const showToast = useApp((s) => s.showToast);
+  const refreshMemories = useApp((s) => s.refreshMemories);
+  const refreshStats = useApp((s) => s.refreshStats);
+  const confirm = useConfirm();
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -24,6 +30,7 @@ export function Memories() {
   const hasMore = useApp((s) => s.hasMoreMemories);
   const loadMore = useApp((s) => s.loadMoreMemories);
   const tags = useApp((s) => s.tags);
+  const memoryOffset = useApp((s) => s.memoryOffset);
 
   async function handleLoadMore() {
     if (loadingMore || !hasMore) return;
@@ -36,32 +43,32 @@ export function Memories() {
     [memories, results, selectedUid]
   );
 
-  // Semantic search when query non-empty
+  const searchSeq = useRef(0);
   useEffect(() => {
-    if (!query.trim()) {
+    const trimmed = query.trim();
+    if (!trimmed) {
       setResults([]);
       return;
     }
-    let cancelled = false;
-    (async () => {
-      setSearching(true);
-      try {
-        const hits = await api.search({
-          project_id: currentProjectId,
-          query: query.trim(),
-          k: 50,
-        });
-        if (!cancelled) setResults(hits);
-      } finally {
-        setSearching(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const seq = ++searchSeq.current;
+    const timer = setTimeout(() => {
+      if (seq !== searchSeq.current) return;
+      (async () => {
+        setSearching(true);
+        try {
+          const hits = await api.search({
+            project_id: currentProjectId,
+            query: trimmed,
+            k: 50,
+          });
+          if (seq === searchSeq.current) setResults(hits);
+        } finally {
+          if (seq === searchSeq.current) setSearching(false);
+        }
+      })();
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
   }, [query, currentProjectId]);
-
-  const memoryOffset = useApp((s) => s.memoryOffset);
 
   const visible = useMemo(() => {
     const source = query.trim() ? results : memories;
@@ -89,6 +96,62 @@ export function Memories() {
     if (n.has(t)) n.delete(t);
     else n.add(t);
     setActiveTags(n);
+  }
+
+  function buildMemoryMenu(m: typeof visible[number]): ContextMenuItem[] {
+    return [
+      {
+        label: "Open",
+        icon: <ExternalLink size={12} />,
+        onClick: () => setSelected(m.uid),
+      },
+      {
+        label: "Copy UID",
+        icon: <Copy size={12} />,
+        onClick: async () => {
+          try {
+            await navigator.clipboard.writeText(m.uid);
+            showToast({ kind: "ok", text: "UID copied" });
+          } catch {
+            showToast({ kind: "err", text: "Clipboard blocked" });
+          }
+        },
+      },
+      {
+        label: "Copy content",
+        icon: <Copy size={12} />,
+        onClick: async () => {
+          try {
+            await navigator.clipboard.writeText(m.content);
+            showToast({ kind: "ok", text: "Content copied" });
+          } catch {
+            showToast({ kind: "err", text: "Clipboard blocked" });
+          }
+        },
+      },
+      { label: "", separator: true, onClick: () => {} },
+      {
+        label: "Forget",
+        icon: <Trash2 size={12} />,
+        danger: true,
+        onClick: async () => {
+          const ok = await confirm({
+            title: "Forget this memory?",
+            body: "It will be removed from the vector index too. This cannot be undone.",
+            confirmLabel: "Forget",
+          });
+          if (!ok) return;
+          try {
+            await api.forget(m.uid);
+            await Promise.all([refreshMemories(), refreshStats()]);
+            if (selectedUid === m.uid) setSelected(null);
+            showToast({ kind: "ok", text: "Forgotten" });
+          } catch (e) {
+            showToast({ kind: "err", text: String(e) });
+          }
+        },
+      },
+    ];
   }
 
   const topTags = tags.slice(0, 20);
@@ -210,6 +273,7 @@ export function Memories() {
                   memory={m}
                   active={selectedUid === m.uid}
                   onClick={() => setSelected(m.uid)}
+                  contextMenuItems={buildMemoryMenu(m)}
                 />
               ))}
               {!query && hasMore && (

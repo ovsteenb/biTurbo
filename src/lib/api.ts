@@ -6,9 +6,11 @@ import type {
   AgentEntry,
   ActivityEntry,
   Stats,
-  IngestResult,
+  IngestJob,
   ConsolidateReport,
+  ConsolidateStatus,
   GraphData,
+  BootstrapPayload,
 } from "./types";
 
 export interface RememberInput {
@@ -100,7 +102,7 @@ export const api = {
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
 
   ingestProject: (project_id: string, root_path: string) =>
-    invoke<IngestResult>("ingest_project", {
+    invoke<IngestJob>("ingest_project", {
       args: { project_id, root_path },
     }),
 
@@ -115,13 +117,7 @@ export const api = {
     }),
 
   consolidateStatus: () =>
-    invoke<{
-      last_run_at: number | null;
-      next_run_in_secs: number;
-      last_report: ConsolidateReport | null;
-      running: boolean;
-      interval_secs: number;
-    }>("consolidate_status"),
+    invoke<ConsolidateStatus>("consolidate_status"),
 
   importFolder: (project_id: string, root_path: string) =>
     invoke<{
@@ -158,4 +154,6 @@ export const api = {
     }),
   recentActivity: (limit = 100) =>
     invoke<ActivityEntry[]>("recent_activity", { limit }),
+
+  bootstrap: () => invoke<BootstrapPayload>("bootstrap"),
 };

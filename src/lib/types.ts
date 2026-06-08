@@ -84,6 +84,60 @@ export interface IngestResult {
   edges_created: number;
 }
 
+export interface IngestJob {
+  job_id: string;
+  project_id: string;
+}
+
+export interface IngestProgress {
+  project_id: string;
+  phase: string;
+  current: number;
+  total: number;
+  file: string | null;
+  chunks_so_far: number;
+}
+
+export interface IngestDone {
+  job_id: string;
+  project_id: string;
+  files_indexed: number;
+  chunks_indexed: number;
+  edges_created: number;
+  elapsed_ms: number;
+}
+
+export interface IngestError {
+  job_id: string;
+  project_id: string;
+  error: string;
+}
+
+export interface ConsolidateReport {
+  decayed: number;
+  duplicates_found: number;
+  merged: number;
+  removed: number;
+}
+
+export interface ConsolidateStatus {
+  last_run_at: number | null;
+  next_run_in_secs: number;
+  last_report: ConsolidateReport | null;
+  running: boolean;
+  interval_secs: number;
+  queued?: boolean;
+}
+
+export interface BootstrapPayload {
+  stats: Stats;
+  projects: Project[];
+  recent: ActivityEntry[];
+  tags: [string, number][];
+  agents: AgentEntry[];
+  consolidate: ConsolidateStatus;
+}
+
 export interface ConsolidateReport {
   decayed: number;
   duplicates_found: number;

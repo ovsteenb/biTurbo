@@ -10,6 +10,8 @@ import { Graph } from "./views/Graph";
 import { Agents } from "./views/Agents";
 import { Settings } from "./views/Settings";
 import { Toast } from "./components/Toast";
+import { ConfirmModalHost } from "./components/ConfirmModal";
+import { ContextMenuHost } from "./components/ContextMenu";
 
 export default function App() {
   const view = useApp((s) => s.view);
@@ -90,6 +92,8 @@ export default function App() {
       </div>
       <QuickAdd />
       <Toast />
+      <ConfirmModalHost />
+      <ContextMenuHost />
     </div>
   );
 }

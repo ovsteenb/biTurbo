@@ -16,10 +16,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "mcp:dev": "cargo run --manifest-path src-tauri/Cargo.toml --bin biturbo-mcp"
+    "mcp:dev": "cargo run --manifest-path src-tauri/Cargo.toml --bin biturbo-mcp",
+    "mcp:build": "cargo build --manifest-path src-tauri/Cargo.toml --bin biturbo-mcp",
+    "mcp:test": "node --experimental-strip-types --no-warnings scripts/mcp-smoke-test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

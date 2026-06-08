@@ -3,8 +3,9 @@
 use crate::error::BiResult;
 use crate::memory::{self, Memory, MemoryWithScore, RememberInput, UpdateInput};
 use crate::project::{self, CreateProjectInput, Project};
+use crate::scheduler::ConsolidateStatus;
 use crate::state::AppState;
-use crate::{consolidate, ingest};
+use crate::ingest;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -180,23 +181,19 @@ pub fn get_project_graph(
     ingest::get_project_graph(state.inner(), &args.project_id)
 }
 
+/// Enqueue a consolidate job. Returns immediately; the UI observes progress
+/// through `consolidate_status` and the `consolidate:done` Tauri event.
 #[tauri::command]
 pub fn consolidate_now(
     state: State<'_, AppState>,
     project_id: Option<String>,
-) -> BiResult<consolidate::ConsolidateReport> {
-    if let Some(pid) = project_id.as_deref() {
-        project::get(state.inner(), pid).map_err(|_| {
-            crate::error::BiError::Invalid(format!("project '{pid}' does not exist"))
-        })?;
-        consolidate::consolidate(state.inner(), Some(pid))
-    } else {
-        crate::scheduler::run_now(state.inner())
-    }
+) -> BiResult<ConsolidateStatus> {
+    crate::scheduler::enqueue(state.inner(), project_id)?;
+    Ok(crate::scheduler::get_status())
 }
 
 #[tauri::command]
-pub fn consolidate_status(state: State<'_, AppState>) -> BiResult<crate::scheduler::ConsolidateStatus> {
+pub fn consolidate_status(_state: State<'_, AppState>) -> BiResult<crate::scheduler::ConsolidateStatus> {
     Ok(crate::scheduler::get_status())
 }
 
