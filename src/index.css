@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    background: #0F0E0C;
+    color: #E8E2D6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: "Inter", system-ui, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: rgba(212, 165, 116, 0.3);
+    color: #fff;
+  }
+
+  /* Custom scrollbar */
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #2A2620;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #3a342d;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium
+           transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-bg hover:bg-accent/90;
+  }
+  .btn-ghost {
+    @apply btn text-text-muted hover:text-text hover:bg-surface-2;
+  }
+  .btn-outline {
+    @apply btn border border-border text-text hover:bg-surface-2 hover:border-border-subtle;
+  }
+  .input {
+    @apply w-full rounded-md border border-border bg-surface px-3 py-2 text-sm
+           text-text placeholder:text-text-dim
+           focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30
+           transition;
+  }
+  .card {
+    @apply rounded-lg border border-border bg-surface;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2
+           px-2.5 py-0.5 text-xs text-text-muted;
+  }
+  .kbd {
+    @apply rounded border border-border bg-surface-2 px-1.5 py-0.5 text-[10px] font-mono
+           text-text-muted;
+  }
+
+  .memory-card {
+    @apply cursor-pointer rounded-lg border border-border-subtle bg-surface
+           p-4 transition hover:border-border hover:bg-surface-2;
+  }
+  .memory-card.active {
+    @apply border-accent/40 bg-accent-soft;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .text-pretty {
+    text-wrap: pretty;
+  }
+}
