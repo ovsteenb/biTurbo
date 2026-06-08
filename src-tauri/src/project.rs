@@ -16,6 +16,8 @@ pub struct Project {
     pub dim: i64,
     pub memory_count: i64,
     pub indexed_count: i64,
+    pub embed_model: Option<String>,
+    pub watch_enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -24,7 +26,7 @@ pub fn list(state: &AppState) -> BiResult<Vec<Project>> {
     let conn = state.db.conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, name, description, root_path, bit_width, dim, memory_count,
-                indexed_count, created_at, updated_at
+                indexed_count, embed_model, watch_enabled, created_at, updated_at
          FROM projects ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([], row_to_project)?;
@@ -35,7 +37,7 @@ pub fn get(state: &AppState, id: &str) -> BiResult<Project> {
     let conn = state.db.conn()?;
     conn.query_row(
         "SELECT id, name, description, root_path, bit_width, dim, memory_count,
-                indexed_count, created_at, updated_at
+                indexed_count, embed_model, watch_enabled, created_at, updated_at
          FROM projects WHERE id = ?1",
         rusqlite::params![id],
         row_to_project,
@@ -114,8 +116,10 @@ fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         dim: r.get(5)?,
         memory_count: r.get(6)?,
         indexed_count: r.get(7)?,
-        created_at: r.get(8)?,
-        updated_at: r.get(9)?,
+        embed_model: r.get(8)?,
+        watch_enabled: r.get::<_, i64>(9)? != 0,
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
     })
 }
 

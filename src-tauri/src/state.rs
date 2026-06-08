@@ -20,6 +20,19 @@ pub struct AppState {
     pub app: Option<AppHandle>,
 }
 
+impl Clone for AppState {
+    fn clone(&self) -> Self {
+        Self {
+            data_dir: self.data_dir.clone(),
+            db: self.db.clone(),
+            embedder: self.embedder.clone(),
+            indices: RwLock::new(self.indices.read().clone()),
+            default_project_id: self.default_project_id.clone(),
+            app: self.app.clone(),
+        }
+    }
+}
+
 impl AppState {
     pub fn open(data_dir: &Path) -> BiResult<Self> {
         std::fs::create_dir_all(data_dir).ok();

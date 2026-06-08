@@ -74,6 +74,7 @@ tree-sitter-css = "0.25"
 # Utilities
 walkdir = "2"
 ignore = "0.4"
+notify = "7"
 streaming-iterator = "0.1"
 lru = "0.12"
 anyhow = "1"

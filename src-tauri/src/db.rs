@@ -11,10 +11,10 @@
 use crate::error::{BiError, BiResult};
 use parking_lot::Mutex;
 use r2d2::Pool;
+use std::sync::Arc;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
-use std::sync::Arc;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -37,8 +37,36 @@ pub fn open_pool(db_path: &Path) -> BiResult<DbPool> {
     Ok(pool)
 }
 
+pub fn rebuild_fts_index(conn: &rusqlite::Connection) -> BiResult<usize> {
+    conn.execute_batch(
+        "DELETE FROM memories_fts;
+         INSERT INTO memories_fts(uid, content, tags, mem_type, project_id)
+         SELECT uid, content, COALESCE(tags, ''), mem_type, project_id FROM memories;",
+    )?;
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM memories_fts", [], |r| r.get(0))?;
+    Ok(n as usize)
+}
+
 pub fn init_schema(conn: &rusqlite::Connection) -> BiResult<()> {
     conn.execute_batch(SCHEMA)?;
+
+    for (table, col, decl) in &[
+        ("projects", "embed_model", "TEXT"),
+        ("projects", "watch_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        let present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                rusqlite::params![table, col],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if present == 0 {
+            let sql = format!("ALTER TABLE {table} ADD COLUMN {col} {decl}");
+            conn.execute_batch(&sql)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -52,6 +80,8 @@ CREATE TABLE IF NOT EXISTS projects (
     dim           INTEGER NOT NULL DEFAULT 384,
     memory_count  INTEGER NOT NULL DEFAULT 0,
     indexed_count INTEGER NOT NULL DEFAULT 0,
+    embed_model   TEXT,
+    watch_enabled INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
@@ -119,6 +149,30 @@ CREATE INDEX IF NOT EXISTS idx_code_edges_project ON code_edges(project_id);
 CREATE INDEX IF NOT EXISTS idx_code_edges_from ON code_edges(from_uid);
 CREATE INDEX IF NOT EXISTS idx_code_edges_to ON code_edges(to_uid);
 
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    uid UNINDEXED,
+    content,
+    tags,
+    mem_type UNINDEXED,
+    project_id UNINDEXED,
+    tokenize='porter unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(uid, content, tags, mem_type, project_id)
+    VALUES (new.uid, new.content, COALESCE(new.tags, ''), new.mem_type, new.project_id);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+    DELETE FROM memories_fts WHERE uid = old.uid;
+END;
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+    UPDATE memories_fts SET
+        content = new.content,
+        tags = COALESCE(new.tags, ''),
+        mem_type = new.mem_type
+    WHERE uid = old.uid;
+END;
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -127,7 +181,16 @@ CREATE TABLE IF NOT EXISTS settings (
 
 pub struct Db {
     pub pool: Arc<DbPool>,
-    write_lock: Mutex<()>,
+    pub write_lock: Arc<Mutex<()>>,
+}
+
+impl Clone for Db {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            write_lock: self.write_lock.clone(),
+        }
+    }
 }
 
 impl Db {
@@ -135,7 +198,7 @@ impl Db {
         let pool = open_pool(db_path)?;
         Ok(Self {
             pool: Arc::new(pool),
-            write_lock: Mutex::new(()),
+            write_lock: Arc::new(Mutex::new(())),
         })
     }
 

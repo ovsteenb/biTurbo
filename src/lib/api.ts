@@ -77,6 +77,8 @@ export const api = {
 
   listProjects: () => invoke<Project[]>("list_projects"),
   getProject: (id: string) => invoke<Project>("get_project", { id }),
+  listTags: (project_id?: string | null) =>
+    invoke<[string, number][]>("list_tags", { projectId: project_id ?? null }),
 
   createProject: (input: {
     name: string;
@@ -111,6 +113,15 @@ export const api = {
     invoke<ConsolidateReport>("consolidate_now", {
       projectId: project_id ?? null,
     }),
+
+  consolidateStatus: () =>
+    invoke<{
+      last_run_at: number | null;
+      next_run_in_secs: number;
+      last_report: ConsolidateReport | null;
+      running: boolean;
+      interval_secs: number;
+    }>("consolidate_status"),
 
   stats: () => invoke<Stats>("stats"),
   listAgents: () => invoke<AgentEntry[]>("list_agents"),

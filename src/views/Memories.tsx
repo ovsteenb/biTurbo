@@ -18,10 +18,12 @@ export function Memories() {
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<typeof memories>([]);
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
+  const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
   const [minImportance, setMinImportance] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const hasMore = useApp((s) => s.hasMoreMemories);
   const loadMore = useApp((s) => s.loadMoreMemories);
+  const tags = useApp((s) => s.tags);
 
   async function handleLoadMore() {
     if (loadingMore || !hasMore) return;
@@ -66,10 +68,14 @@ export function Memories() {
     return source.filter((m) => {
       if (m.project_id !== currentProjectId) return false;
       if (activeTypes.size > 0 && !activeTypes.has(m.mem_type)) return false;
+      if (activeTags.size > 0) {
+        const hasAny = m.tags.some((t) => activeTags.has(t));
+        if (!hasAny) return false;
+      }
       if (m.importance < minImportance) return false;
       return true;
     });
-  }, [query, results, memories, activeTypes, minImportance, currentProjectId]);
+  }, [query, results, memories, activeTypes, activeTags, minImportance, currentProjectId]);
 
   function toggleType(t: string) {
     const n = new Set(activeTypes);
@@ -77,6 +83,15 @@ export function Memories() {
     else n.add(t);
     setActiveTypes(n);
   }
+
+  function toggleTag(t: string) {
+    const n = new Set(activeTags);
+    if (n.has(t)) n.delete(t);
+    else n.add(t);
+    setActiveTags(n);
+  }
+
+  const topTags = tags.slice(0, 20);
 
   return (
     <div className="flex h-full">
@@ -127,6 +142,32 @@ export function Memories() {
                 </button>
               );
             })}
+
+            {topTags.length > 0 && (
+              <>
+                <span className="ml-2 text-[10px] uppercase tracking-widest text-text-dim">
+                  tag
+                </span>
+                {topTags.map(([t, n]) => {
+                  const active = activeTags.has(t);
+                  return (
+                    <button
+                      key={t}
+                      onClick={() => toggleTag(t)}
+                      title={`${n} memories`}
+                      className={clsx(
+                        "rounded-full px-2.5 py-0.5 text-xs transition",
+                        active
+                          ? "bg-violet-500/20 text-violet-200 ring-1 ring-violet-500/40"
+                          : "border border-border bg-surface-2 text-text-muted hover:text-text"
+                      )}
+                    >
+                      #{t}
+                    </button>
+                  );
+                })}
+              </>
+            )}
 
             <div className="ml-auto flex items-center gap-2">
               <span className="text-[10px] uppercase tracking-widest text-text-dim">

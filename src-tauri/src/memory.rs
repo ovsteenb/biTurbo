@@ -238,13 +238,67 @@ pub fn search(
         None
     };
 
-    let hits = state.embed_and_search(&project_id, query, k, allowlist.as_deref())?;
-    if hits.is_empty() {
+    let kk = (k * 2).max(20);
+    let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist.as_deref())?;
+
+    let conn = state.db.conn()?;
+    let mut fts_uids: Vec<(String, f64)> = Vec::new();
+    let fts_query = sanitize_fts_query(query);
+    if !fts_query.is_empty() {
+        let fts_sql = if let Some(t) = mem_type {
+            format!(
+                "SELECT uid, bm25(memories_fts) FROM memories_fts
+                 WHERE memories_fts MATCH ?1 AND mem_type = ?2 AND project_id = ?3
+                 ORDER BY bm25(memories_fts) ASC LIMIT ?4"
+            )
+        } else {
+            "SELECT uid, bm25(memories_fts) FROM memories_fts
+             WHERE memories_fts MATCH ?1 AND project_id = ?2
+             ORDER BY bm25(memories_fts) ASC LIMIT ?3".to_string()
+        };
+        let mut stmt = conn.prepare(&fts_sql)?;
+        let mut rows: Box<dyn Iterator<Item = (String, f64)>> = if let Some(t) = mem_type {
+            Box::new(
+                stmt.query_map(
+                    rusqlite::params![fts_query, t, &project_id, kk as i64],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+                )?
+                .filter_map(|r| r.ok()),
+            )
+        } else {
+            Box::new(
+                stmt.query_map(
+                    rusqlite::params![fts_query, &project_id, kk as i64],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+                )?
+                .filter_map(|r| r.ok()),
+            )
+        };
+        for r in rows.by_ref() {
+            fts_uids.push(r);
+        }
+    }
+
+    let mut fused: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    const RRF_K: f32 = 60.0;
+    for (rank, h) in vec_hits.iter().enumerate() {
+        let score = 1.0 / (RRF_K + rank as f32 + 1.0);
+        *fused.entry(h.uid.clone()).or_insert(0.0) += score;
+    }
+    for (rank, (uid, _bm25)) in fts_uids.iter().enumerate() {
+        let score = 1.0 / (RRF_K + rank as f32 + 1.0);
+        *fused.entry(uid.clone()).or_insert(0.0) += score;
+    }
+
+    let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.truncate(k);
+
+    if ranked.is_empty() {
         return Ok(Vec::new());
     }
 
-    let conn = state.db.conn()?;
-    let n = hits.len();
+    let n = ranked.len();
     let placeholders = std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",");
     let select_sql = format!(
         "SELECT uid, project_id, mem_type, content, tags, source_agent, importance,
@@ -254,7 +308,7 @@ pub fn search(
         placeholders
     );
     let mut stmt = conn.prepare(&select_sql)?;
-    let params: Vec<&dyn rusqlite::ToSql> = hits.iter().map(|h| &h.uid as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = ranked.iter().map(|(u, _)| u as &dyn rusqlite::ToSql).collect();
     let by_uid: std::collections::HashMap<String, Memory> = stmt
         .query_map(params.as_slice(), row_to_memory)?
         .filter_map(|r| r.ok())
@@ -269,8 +323,8 @@ pub fn search(
     );
     let mut upd_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n + 1);
     upd_params.push(Box::new(now));
-    for h in &hits {
-        upd_params.push(Box::new(h.uid.clone()));
+    for (u, _) in &ranked {
+        upd_params.push(Box::new(u.clone()));
     }
     let upd_refs: Vec<&dyn rusqlite::ToSql> = upd_params.iter().map(|p| p.as_ref()).collect();
     conn.execute(&update_sql, upd_refs.as_slice())?;
@@ -286,23 +340,36 @@ pub fn search(
         act_placeholders.join(",")
     );
     let mut act_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n * 6);
-    for h in &hits {
+    for (u, _score) in &ranked {
         act_params.push(Box::new(project_id.clone()));
         act_params.push(Box::new(Option::<String>::None));
         act_params.push(Box::new("read"));
-        act_params.push(Box::new(h.uid.clone()));
+        act_params.push(Box::new(u.clone()));
         act_params.push(Box::new(
-            serde_json::to_string(&serde_json::json!({"score": h.score, "query": query}))?,
+            serde_json::to_string(&serde_json::json!({"query": query}))?,
         ));
         act_params.push(Box::new(now));
     }
     let act_refs: Vec<&dyn rusqlite::ToSql> = act_params.iter().map(|p| p.as_ref()).collect();
     conn.execute(&act_sql, act_refs.as_slice())?;
 
-    Ok(hits
+    Ok(ranked
         .into_iter()
-        .filter_map(|h| by_uid.get(&h.uid).cloned().map(|memory| MemoryWithScore { memory, score: h.score }))
+        .filter_map(|(uid, score)| by_uid.get(&uid).cloned().map(|memory| MemoryWithScore { memory, score }))
         .collect())
+}
+
+fn sanitize_fts_query(q: &str) -> String {
+    let tokens: Vec<String> = q
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-'))
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            let safe = t.replace('"', "");
+            format!("\"{safe}\"*")
+        })
+        .collect();
+    tokens.join(" ")
 }
 
 pub fn list(
@@ -360,6 +427,32 @@ pub fn count_by_type(state: &AppState, project_id: Option<&str>) -> BiResult<Vec
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn list_tags(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(String, i64)>> {
+    let conn = state.db.conn()?;
+    let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut sql = String::from("SELECT tags FROM memories WHERE tags IS NOT NULL AND tags != '[]' AND tags != ''");
+    let params: Vec<Box<dyn rusqlite::ToSql>> = match project_id {
+        Some(p) => {
+            sql.push_str(" AND project_id = ?1");
+            vec![Box::new(p.to_string())]
+        }
+        None => Vec::new(),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |r| r.get::<_, String>(0))?;
+    for r in rows.flatten() {
+        if let Ok(arr) = serde_json::from_str::<Vec<String>>(&r) {
+            for t in arr {
+                *out.entry(t).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut v: Vec<(String, i64)> = out.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Ok(v)
 }
 
 fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {

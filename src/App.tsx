@@ -22,6 +22,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
 
   const refreshGraph = useApp((s) => s.refreshGraph);
+  const refreshTags = useApp((s) => s.refreshTags);
 
   useEffect(() => {
     (async () => {
@@ -31,6 +32,7 @@ export default function App() {
         await refreshActivity();
         await refreshAgents();
         await refreshMemories();
+        await refreshTags().catch(() => {});
         await refreshGraph().catch(() => {});
         setReady(true);
       } catch (e) {
@@ -38,12 +40,13 @@ export default function App() {
         setReady(true);
       }
     })();
-  }, [refreshProjects, refreshStats, refreshActivity, refreshAgents, refreshMemories, refreshGraph]);
+  }, [refreshProjects, refreshStats, refreshActivity, refreshAgents, refreshMemories, refreshTags, refreshGraph]);
 
   useEffect(() => {
     refreshMemories();
+    refreshTags().catch(() => {});
     refreshGraph().catch(() => {});
-  }, [currentProjectId, refreshMemories, refreshGraph]);
+  }, [currentProjectId, refreshMemories, refreshTags, refreshGraph]);
 
   // Global keyboard
   useEffect(() => {

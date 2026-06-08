@@ -64,6 +64,14 @@ pub fn list_memories(
 }
 
 #[tauri::command]
+pub fn list_tags(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> BiResult<Vec<(String, i64)>> {
+    memory::list_tags(state.inner(), project_id.as_deref())
+}
+
+#[tauri::command]
 pub fn get_memory(state: State<'_, AppState>, uid: String) -> BiResult<Option<Memory>> {
     memory::get(state.inner(), &uid)
 }
@@ -165,7 +173,16 @@ pub fn consolidate_now(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> BiResult<consolidate::ConsolidateReport> {
-    consolidate::consolidate(state.inner(), project_id.as_deref())
+    if project_id.is_some() {
+        consolidate::consolidate(state.inner(), project_id.as_deref())
+    } else {
+        crate::scheduler::run_now(state.inner())
+    }
+}
+
+#[tauri::command]
+pub fn consolidate_status(state: State<'_, AppState>) -> BiResult<crate::scheduler::ConsolidateStatus> {
+    Ok(crate::scheduler::get_status())
 }
 
 #[tauri::command]

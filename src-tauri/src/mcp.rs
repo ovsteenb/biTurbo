@@ -127,6 +127,11 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             let m: Vec<Memory> = memory::list(state, project_id, mem_type, limit, offset)?;
             text(&serde_json::to_string_pretty(&m)?)
         }
+        "list_tags" => {
+            let project_id = args.get("project_id").and_then(|v| v.as_str());
+            let t = memory::list_tags(state, project_id)?;
+            text(&serde_json::to_string_pretty(&t)?)
+        }
         "recall_for_context" => {
             let project_id = args.get("project_id").and_then(|v| v.as_str()).unwrap_or("");
             let query = arg_str(&args, "query")?;
@@ -171,8 +176,16 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         }
         "consolidate" => {
             let project_id = args.get("project_id").and_then(|v| v.as_str());
-            let r = consolidate::consolidate(state, project_id)?;
+            let r = if let Some(p) = project_id {
+                consolidate::consolidate(state, Some(p))?
+            } else {
+                crate::scheduler::run_now(state)?
+            };
             text(&serde_json::to_string_pretty(&r)?)
+        }
+        "consolidate_status" => {
+            let s = crate::scheduler::get_status();
+            text(&serde_json::to_string_pretty(&s)?)
         }
         "stats" => {
             let conn = state.db.conn()?;

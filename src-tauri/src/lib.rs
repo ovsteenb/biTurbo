@@ -28,6 +28,7 @@ pub mod ingest;
 pub mod mcp;
 pub mod memory;
 pub mod project;
+pub mod scheduler;
 pub mod state;
 
 pub use error::{BiError, BiResult};
@@ -35,6 +36,7 @@ pub use state::AppState;
 
 use tauri::Manager;
 use tracing::info;
+use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -60,11 +62,11 @@ pub fn run() {
                 .expect("app data dir resolvable");
             std::fs::create_dir_all(&data_dir).ok();
 
-            let state = AppState::open(&data_dir).expect("open app state");
-            let handle = app.handle().clone();
-            let mut state = state;
-            state.app = Some(handle);
-            app.manage(state);
+            let mut state = AppState::open(&data_dir).expect("open app state");
+            state.app = Some(app.handle().clone());
+            let state_arc = Arc::new(state);
+            scheduler::spawn(state_arc.clone());
+            app.manage(state_arc);
             info!("biTurbo ready @ {}", data_dir.display());
             Ok(())
         })
@@ -82,7 +84,9 @@ pub fn run() {
             commands::get_project,
             commands::ingest_project,
             commands::get_project_graph,
+            commands::list_tags,
             commands::consolidate_now,
+            commands::consolidate_status,
             commands::stats,
             commands::list_agents,
             commands::register_agent,

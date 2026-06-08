@@ -32,6 +32,9 @@ interface AppStore {
   searchQuery: string;
   setSearchQuery: (q: string) => void;
 
+  tags: [string, number][];
+  refreshTags: () => Promise<void>;
+
   memories: Memory[];
   selectedMemoryUid: string | null;
   setSelectedMemoryUid: (uid: string | null) => void;
@@ -77,6 +80,12 @@ export const useApp = create<AppStore>((set, get) => ({
 
   searchQuery: "",
   setSearchQuery: (q) => set({ searchQuery: q }),
+
+  tags: [],
+  refreshTags: async () => {
+    const tags = await api.listTags(get().currentProjectId);
+    set({ tags });
+  },
 
   memories: [],
   selectedMemoryUid: null,
