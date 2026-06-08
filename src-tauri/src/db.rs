@@ -28,10 +28,10 @@ pub fn open_pool(db_path: &Path) -> BiResult<DbPool> {
              PRAGMA synchronous=NORMAL;
              PRAGMA foreign_keys=ON;
              PRAGMA temp_store=MEMORY;
-             PRAGMA busy_timeout=5000;",
+             PRAGMA busy_timeout=1000;",
         )
     });
-    let pool = Pool::builder().max_size(8).build(manager)?;
+    let pool = Pool::builder().max_size(12).build(manager)?;
     let conn = pool.get()?;
     init_schema(&conn)?;
     Ok(pool)

@@ -10,6 +10,7 @@ use tauri::Emitter;
 
 const INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const STARTUP_DELAY: Duration = Duration::from_secs(60);
+const FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct ConsolidateStatus {
@@ -49,6 +50,13 @@ pub fn spawn(state: Arc<AppState>) {
         loop {
             run_once(&state_for_task).await;
             tokio::time::sleep(INTERVAL).await;
+        }
+    });
+    let state_for_flusher = state.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(FLUSH_INTERVAL).await;
+            state_for_flusher.flush_all_indices();
         }
     });
 }

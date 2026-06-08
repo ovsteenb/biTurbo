@@ -146,6 +146,9 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
     })?;
 
     state.embed_and_add(&project_id, &uid, &input.content)?;
+    if let Ok(idx) = state.get_or_load_index(&project_id) {
+        let _ = idx.flush();
+    }
 
     get(state, &uid)?.ok_or_else(|| BiError::Internal("memory not found post-insert".into()))
 }
@@ -170,6 +173,7 @@ pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
     let mem = get(state, uid)?.ok_or_else(|| BiError::NotFound(uid.into()))?;
     if let Ok(idx) = state.get_or_load_index(&mem.project_id) {
         let _ = idx.remove(uid);
+        let _ = idx.flush();
     }
     let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
@@ -209,6 +213,9 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
 
     if input.content.is_some() {
         state.embed_and_add(&existing.project_id, uid, &new_content)?;
+        if let Ok(idx) = state.get_or_load_index(&existing.project_id) {
+            let _ = idx.flush();
+        }
     }
 
     get(state, uid)?.ok_or_else(|| BiError::Internal("memory vanished after update".into()))
@@ -228,58 +235,36 @@ pub fn search(
         project_id.to_string()
     };
 
-    let allowlist = if let Some(t) = mem_type {
-        let conn = state.db.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT uid FROM memories WHERE project_id = ?1 AND mem_type = ?2",
-        )?;
-        let uids: Vec<String> = stmt
-            .query_map(rusqlite::params![&project_id, t], |r| r.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
-        Some(uids)
-    } else {
-        None
-    };
-
     let kk = (k * 2).max(20);
-    let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist.as_deref())?;
+    let vec_hits = state.embed_and_search(&project_id, query, kk, None)?;
 
     let conn = state.db.conn()?;
     let mut fts_uids: Vec<(String, f64)> = Vec::new();
     let fts_query = sanitize_fts_query(query);
     if !fts_query.is_empty() {
-        let fts_sql = if let Some(t) = mem_type {
-            format!(
+        let kk_i64 = kk as i64;
+        let mut stmt = if let Some(t) = mem_type {
+            conn.prepare(
                 "SELECT uid, bm25(memories_fts) FROM memories_fts
                  WHERE memories_fts MATCH ?1 AND mem_type = ?2 AND project_id = ?3
-                 ORDER BY bm25(memories_fts) ASC LIMIT ?4"
-            )
+                 ORDER BY bm25(memories_fts) ASC LIMIT ?4",
+            )?
         } else {
-            "SELECT uid, bm25(memories_fts) FROM memories_fts
-             WHERE memories_fts MATCH ?1 AND project_id = ?2
-             ORDER BY bm25(memories_fts) ASC LIMIT ?3".to_string()
+            conn.prepare(
+                "SELECT uid, bm25(memories_fts) FROM memories_fts
+                 WHERE memories_fts MATCH ?1 AND project_id = ?2
+                 ORDER BY bm25(memories_fts) ASC LIMIT ?3",
+            )?
         };
-        let mut stmt = conn.prepare(&fts_sql)?;
-        let mut rows: Box<dyn Iterator<Item = (String, f64)>> = if let Some(t) = mem_type {
-            Box::new(
-                stmt.query_map(
-                    rusqlite::params![fts_query, t, &project_id, kk as i64],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
-                )?
-                .filter_map(|r| r.ok()),
-            )
+        let row_map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(String, f64)> {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+        };
+        let rows: Box<dyn Iterator<Item = rusqlite::Result<(String, f64)>>> = if let Some(t) = mem_type {
+            Box::new(stmt.query_map(rusqlite::params![fts_query, t, &project_id, kk_i64], row_map)?)
         } else {
-            Box::new(
-                stmt.query_map(
-                    rusqlite::params![fts_query, &project_id, kk as i64],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
-                )?
-                .filter_map(|r| r.ok()),
-            )
+            Box::new(stmt.query_map(rusqlite::params![fts_query, &project_id, kk_i64], row_map)?)
         };
-        for r in rows.by_ref() {
+        for r in rows.flatten() {
             fts_uids.push(r);
         }
     }

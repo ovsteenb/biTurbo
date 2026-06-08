@@ -261,6 +261,42 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             let out = json!({ "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type });
             text(&serde_json::to_string_pretty(&out)?)
         }
+        "bootstrap" => {
+            let conn = state.db.conn()?;
+            let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
+            let total_projects: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
+            let by_type = memory::count_by_type(state, None)?;
+            let projects = project::list(state)?;
+            let tags = memory::list_tags(state, None)?;
+            let recent_limit = 25_i64;
+            let mut s = conn.prepare("SELECT id, project_id, agent_id, action, memory_uid, created_at FROM activity ORDER BY created_at DESC LIMIT ?1")?;
+            let recent: Vec<Value> = s.query_map(rusqlite::params![recent_limit], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "project_id": r.get::<_, Option<String>>(1)?,
+                    "agent_id": r.get::<_, Option<String>>(2)?,
+                    "action": r.get::<_, String>(3)?,
+                    "memory_uid": r.get::<_, Option<String>>(4)?,
+                    "created_at": r.get::<_, i64>(5)?,
+                }))
+            })?.filter_map(|r| r.ok()).collect();
+            let mut a = conn.prepare("SELECT id, name, kind, last_seen FROM agents ORDER BY last_seen DESC")?;
+            let agents: Vec<Value> = a.query_map([], |r| Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "kind": r.get::<_, String>(2)?,
+                "last_seen": r.get::<_, i64>(3)?,
+            })))?.filter_map(|r| r.ok()).collect();
+            let out = json!({
+                "stats": { "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type },
+                "projects": projects,
+                "recent": recent,
+                "tags": tags,
+                "agents": agents,
+                "consolidate": crate::scheduler::get_status(),
+            });
+            text(&serde_json::to_string_pretty(&out)?)
+        }
         "recent_activity" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as i64;
             let conn = state.db.conn()?;
@@ -342,6 +378,7 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"ingest_project","description":"Index a code directory via tree-sitter (rust/typescript/javascript/python/go).","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
 {"name":"consolidate","description":"Run memory maintenance: decay, dedup (cosine >= 0.95), merge.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
 {"name":"stats","description":"Global stats.","inputSchema":{"type":"object","properties":{}}},
+{"name":"bootstrap","description":"One-call page mount: stats + projects + recent + tags + agents + consolidate status.","inputSchema":{"type":"object","properties":{}}},
 {"name":"recent_activity","description":"Recent activity entries.","inputSchema":{"type":"object","properties":{"limit":{"type":"number"}}}},
 {"name":"register_agent","description":"Register or update this agent's record. Call once per session.","inputSchema":{"type":"object","required":["name","kind"],"properties":{"name":{"type":"string"},"kind":{"type":"string"},"meta":{"type":"object"}}}}
 ]"#;

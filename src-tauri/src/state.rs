@@ -9,15 +9,17 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::AppHandle;
 
 pub struct AppState {
     pub data_dir: PathBuf,
     pub db: Db,
     pub embedder: Arc<Embedder>,
-    pub indices: RwLock<HashMap<String, Arc<ProjectIndex>>>,
+    pub indices: Arc<RwLock<HashMap<String, Arc<ProjectIndex>>>>,
     pub default_project_id: String,
     pub app: Option<AppHandle>,
+    pub index_size_cache: parking_lot::Mutex<Option<(Instant, u64)>>,
 }
 
 impl Clone for AppState {
@@ -26,9 +28,10 @@ impl Clone for AppState {
             data_dir: self.data_dir.clone(),
             db: self.db.clone(),
             embedder: self.embedder.clone(),
-            indices: RwLock::new(self.indices.read().clone()),
+            indices: self.indices.clone(),
             default_project_id: self.default_project_id.clone(),
             app: self.app.clone(),
+            index_size_cache: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -55,9 +58,10 @@ impl AppState {
             data_dir: data_dir.to_path_buf(),
             db,
             embedder,
-            indices: RwLock::new(HashMap::new()),
+            indices: Arc::new(RwLock::new(HashMap::new())),
             default_project_id: default_id,
             app: None,
+            index_size_cache: parking_lot::Mutex::new(None),
         };
 
         // Warm indices for existing projects.
@@ -82,20 +86,30 @@ impl AppState {
             })?
             .filter_map(|r| r.ok())
             .collect();
+        drop(stmt);
 
-        let mut indices = self.indices.write();
-        for (pid, dim, bw) in rows {
-            indices.entry(pid.clone()).or_insert_with(|| {
-                Arc::new(
-                    ProjectIndex::open_or_create(
-                        &pid,
-                        dim,
-                        bw as usize,
-                        &self.data_dir.join("indices"),
-                    )
+        // Open any missing index files BEFORE taking the write lock, so the
+        // critical section is just map inserts.
+        let data_dir = self.data_dir.join("indices");
+        let to_open: Vec<(String, usize, u8)> = {
+            let existing = self.indices.read();
+            rows.into_iter()
+                .filter(|(pid, _, _)| !existing.contains_key(pid))
+                .collect()
+        };
+        let mut opened: Vec<(String, Arc<ProjectIndex>)> = Vec::with_capacity(to_open.len());
+        for (pid, dim, bw) in to_open {
+            let idx = Arc::new(
+                ProjectIndex::open_or_create(&pid, dim, bw as usize, &data_dir)
                     .expect("open project index"),
-                )
-            });
+            );
+            opened.push((pid, idx));
+        }
+        if !opened.is_empty() {
+            let mut indices = self.indices.write();
+            for (pid, idx) in opened {
+                indices.entry(pid).or_insert(idx);
+            }
         }
         Ok(())
     }
@@ -104,12 +118,47 @@ impl AppState {
         if let Some(idx) = self.indices.read().get(project_id).cloned() {
             return Ok(idx);
         }
-        self.refresh_indices()?;
-        self.indices
-            .read()
-            .get(project_id)
-            .cloned()
-            .ok_or_else(|| BiError::NotFound(format!("project {project_id}")))
+        // Open the one missing file directly without scanning the projects table.
+        let conn = self.db.conn()?;
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT dim, bit_width FROM projects WHERE id = ?1",
+                rusqlite::params![project_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let (dim, bw) = match row {
+            Some((d, b)) => (d as usize, b as u8 as usize),
+            None => return Err(BiError::NotFound(format!("project {project_id}"))),
+        };
+        let idx = Arc::new(
+            ProjectIndex::open_or_create(
+                project_id,
+                dim,
+                bw,
+                &self.data_dir.join("indices"),
+            )?,
+        );
+        self.indices.write().insert(project_id.to_string(), idx.clone());
+        Ok(idx)
+    }
+
+    /// Total bytes on disk for project index files. Cached for 5s.
+    pub fn index_bytes(&self) -> u64 {
+        if let Some((when, n)) = *self.index_size_cache.lock() {
+            if when.elapsed().as_secs() < 5 {
+                return n;
+            }
+        }
+        let n: u64 = walkdir::WalkDir::new(self.data_dir.join("indices"))
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.metadata().ok())
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+            .sum();
+        *self.index_size_cache.lock() = Some((Instant::now(), n));
+        n
     }
 
     /// Embed text and add to a project's index. Returns the vector length.
@@ -123,6 +172,14 @@ impl AppState {
         let idx = self.get_or_load_index(project_id)?;
         idx.add(uid, &vec)?;
         Ok(vec.len())
+    }
+
+    /// Flush every dirty project index to disk. Cheap no-op if nothing changed.
+    pub fn flush_all_indices(&self) {
+        let indices = self.indices.read();
+        for idx in indices.values() {
+            let _ = idx.maybe_flush(std::time::Duration::from_millis(500), false);
+        }
     }
 
     pub fn embed_and_search(

@@ -321,13 +321,7 @@ pub fn stats(state: State<'_, AppState>) -> BiResult<Stats> {
     };
     by_project.sort_by(|a, b| b.1.cmp(&a.1));
 
-    let index_bytes: u64 = walkdir::WalkDir::new(state.data_dir.join("indices"))
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.metadata().ok())
-        .filter(|m| m.is_file())
-        .map(|m| m.len())
-        .sum();
+    let index_bytes = state.index_bytes();
 
     let week_ago = chrono::Utc::now().timestamp_millis() - 7 * 24 * 3600 * 1000;
     let recent_writes_7d: i64 = conn.query_row(
@@ -351,6 +345,74 @@ pub fn stats(state: State<'_, AppState>) -> BiResult<Stats> {
         recent_writes_7d,
         recent_reads_7d,
     })
+}
+
+#[derive(Serialize)]
+pub struct Bootstrap {
+    pub stats: Stats,
+    pub projects: Vec<Project>,
+    pub recent: Vec<ActivityEntry>,
+    pub tags: Vec<(String, i64)>,
+    pub agents: Vec<AgentEntry>,
+    pub consolidate: crate::scheduler::ConsolidateStatus,
+}
+
+#[tauri::command]
+pub fn bootstrap(state: State<'_, AppState>) -> BiResult<Bootstrap> {
+    Ok(Bootstrap {
+        stats: stats(state.clone())?,
+        projects: project::list(state.inner())?,
+        recent: recent_activity_inner(state.inner(), 25)?,
+        tags: memory::list_tags(state.inner(), None)?,
+        agents: list_agents_inner(state.inner())?,
+        consolidate: crate::scheduler::get_status(),
+    })
+}
+
+fn recent_activity_inner(state: &AppState, limit: usize) -> BiResult<Vec<ActivityEntry>> {
+    let conn = state.db.conn()?;
+    let mut s = conn.prepare(
+        "SELECT id, project_id, agent_id, action, memory_uid, detail, created_at
+         FROM activity ORDER BY created_at DESC LIMIT ?1",
+    )?;
+    let rows = s.query_map(rusqlite::params![limit as i64], |r| {
+        let detail_str: Option<String> = r.get(5)?;
+        let detail = detail_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        Ok(ActivityEntry {
+            id: r.get(0)?,
+            project_id: r.get(1)?,
+            agent_id: r.get(2)?,
+            action: r.get(3)?,
+            memory_uid: r.get(4)?,
+            detail,
+            created_at: r.get(6)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+fn list_agents_inner(state: &AppState) -> BiResult<Vec<AgentEntry>> {
+    let conn = state.db.conn()?;
+    let mut s = conn.prepare(
+        "SELECT id, name, kind, last_seen, created_at, meta FROM agents ORDER BY last_seen DESC",
+    )?;
+    let rows = s.query_map([], |r| {
+        let meta_str: Option<String> = r.get(5)?;
+        let meta = meta_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        Ok(AgentEntry {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            kind: r.get(2)?,
+            last_seen: r.get(3)?,
+            created_at: r.get(4)?,
+            meta,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]

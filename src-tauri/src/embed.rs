@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_DIM: usize = 384;
 pub const DEFAULT_MODEL: &str = "BGE-small-en-v1.5";
 const QUERY_CACHE_CAP: usize = 256;
-const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
+const IDLE_RELEASE: Duration = Duration::from_secs(60 * 60);
 
 pub struct Embedder {
     model: Arc<Mutex<Option<TextEmbedding>>>,

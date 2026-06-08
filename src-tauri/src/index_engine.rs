@@ -3,6 +3,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use turbovec::IdMapIndex;
 
 pub struct ProjectIndex {
@@ -14,6 +16,8 @@ pub struct ProjectIndex {
     extid_to_uid: Mutex<HashMap<u64, String>>,
     file_path: PathBuf,
     next_extid: Mutex<u64>,
+    dirty: AtomicBool,
+    last_change: Mutex<Instant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +68,8 @@ impl ProjectIndex {
             extid_to_uid: Mutex::new(extid_to_uid),
             file_path,
             next_extid: Mutex::new(next_extid),
+            dirty: AtomicBool::new(false),
+            last_change: Mutex::new(Instant::now()),
         })
     }
 
@@ -92,7 +98,8 @@ impl ProjectIndex {
         u2e.insert(uid.to_string(), extid);
         e2u.insert(extid, uid.to_string());
 
-        self.persist(&idx, &u2e)?;
+        self.dirty.store(true, Ordering::Release);
+        *self.last_change.lock() = Instant::now();
         Ok(())
     }
 
@@ -104,11 +111,42 @@ impl ProjectIndex {
         if let Some(extid) = u2e.remove(uid) {
             e2u.remove(&extid);
             let removed = idx.remove(extid);
-            self.persist(&idx, &u2e)?;
+            self.dirty.store(true, Ordering::Release);
+            *self.last_change.lock() = Instant::now();
             Ok(removed)
         } else {
             Ok(false)
         }
+    }
+
+    /// Persist the index to disk if it's been dirty for at least `min_idle` and
+    /// the last change was more than `min_idle` ago, or if `force` is true.
+    /// Returns true if a write actually happened.
+    pub fn maybe_flush(&self, min_idle: Duration, force: bool) -> BiResult<bool> {
+        if !self.dirty.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        if !force && self.last_change.lock().elapsed() < min_idle {
+            return Ok(false);
+        }
+        self.persist_now()
+    }
+
+    /// Force a persist regardless of dirty/idle state.
+    pub fn flush(&self) -> BiResult<bool> {
+        self.persist_now()
+    }
+
+    fn persist_now(&self) -> BiResult<bool> {
+        let idx = self.index.lock();
+        let u2e = self.uid_to_extid.lock();
+        idx.write(&self.file_path)
+            .map_err(|e| BiError::Index(format!("write: {e}")))?;
+        let meta = meta_path_for(&self.file_path);
+        let bytes = serde_json::to_vec(&*u2e)?;
+        std::fs::write(&meta, bytes)?;
+        self.dirty.store(false, Ordering::Release);
+        Ok(true)
     }
 
     pub fn search(
@@ -144,21 +182,36 @@ impl ProjectIndex {
             .collect())
     }
 
+    /// Search the index, then return only hits whose uid is in `filter_uids`.
+    /// Cheaper than `search_with_allowlist` when the candidate set is small
+    /// relative to the index.
+    pub fn search_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter_uids: &[String],
+    ) -> BiResult<Vec<SearchHit>> {
+        assert_eq!(query.len(), self.dim, "query dim mismatch");
+        let idx = self.index.lock();
+        let e2u = self.extid_to_uid.lock();
+        let (scores, ids) = idx.search(query, k);
+        Ok(ids
+            .into_iter()
+            .zip(scores.into_iter())
+            .filter_map(|(id, score)| {
+                e2u.get(&id)
+                    .filter(|uid| filter_uids.iter().any(|f| f == *uid))
+                    .map(|uid| SearchHit { uid: uid.clone(), score, ext_id: id })
+            })
+            .collect())
+    }
+
     pub fn len(&self) -> usize {
         self.uid_to_extid.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    fn persist(&self, idx: &IdMapIndex, u2e: &HashMap<String, u64>) -> BiResult<()> {
-        idx.write(&self.file_path)
-            .map_err(|e| BiError::Index(format!("write: {e}")))?;
-        let meta = meta_path_for(&self.file_path);
-        let bytes = serde_json::to_vec(u2e)?;
-        std::fs::write(&meta, bytes)?;
-        Ok(())
     }
 }
 

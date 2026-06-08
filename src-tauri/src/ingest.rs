@@ -261,6 +261,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         }
         processed += n;
     }
+    let _ = idx.flush();
 
     // ---- BATCHED: insert all edges in one multi-row INSERT ----
     if !pending_edges.is_empty() {
