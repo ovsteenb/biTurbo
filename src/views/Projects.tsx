@@ -182,7 +182,9 @@ export function Projects() {
             <Loader2 size={14} className="animate-spin text-accent" />
             <span className="font-medium text-text">
               {activeIngest.phase === "scanning" && "Scanning project…"}
+              {activeIngest.phase === "parsing" && "Parsing files…"}
               {activeIngest.phase === "embedding" && "Embedding chunks…"}
+              {activeIngest.phase === "writing" && "Writing chunks…"}
               {activeIngest.phase === "edges" && "Building edges…"}
               {activeIngest.phase === "done" && "Done"}
             </span>

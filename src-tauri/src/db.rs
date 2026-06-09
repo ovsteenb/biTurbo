@@ -28,8 +28,13 @@ pub fn open_pool(db_path: &Path) -> BiResult<DbPool> {
              PRAGMA synchronous=NORMAL;
              PRAGMA foreign_keys=ON;
              PRAGMA temp_store=MEMORY;
-             PRAGMA busy_timeout=1000;",
-        )
+             PRAGMA busy_timeout=5000;
+             PRAGMA cache_size=-65536;          -- 64 MiB page cache per connection
+             PRAGMA mmap_size=268435456;        -- 256 MiB memory-mapped reads
+             PRAGMA wal_autocheckpoint=2000;",
+        )?;
+        c.set_prepared_statement_cache_capacity(64);
+        Ok(())
     });
     let pool = Pool::builder().max_size(12).build(manager)?;
     let conn = pool.get()?;
@@ -121,6 +126,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
 CREATE INDEX IF NOT EXISTS idx_memories_type    ON memories(mem_type);
 CREATE INDEX IF NOT EXISTS idx_memories_imp     ON memories(importance DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_time    ON memories(created_at DESC);
+-- Covers the common list/search filter (project + type, newest first) without a sort pass.
+CREATE INDEX IF NOT EXISTS idx_memories_proj_type_time ON memories(project_id, mem_type, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS activity (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,17 +256,17 @@ pub fn log_activity(
     detail: Option<&serde_json::Value>,
 ) -> BiResult<()> {
     let detail_str = detail.map(|v| v.to_string());
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "INSERT INTO activity(project_id, agent_id, action, memory_uid, detail, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            project_id,
-            agent_id,
-            action,
-            memory_uid,
-            detail_str,
-            chrono::Utc::now().timestamp_millis(),
-        ],
     )?;
+    stmt.execute(params![
+        project_id,
+        agent_id,
+        action,
+        memory_uid,
+        detail_str,
+        chrono::Utc::now().timestamp_millis(),
+    ])?;
     Ok(())
 }

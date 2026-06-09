@@ -145,24 +145,21 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
         Ok(())
     })?;
 
+    // Marks the index dirty; the background flusher in AppState persists it.
     state.embed_and_add(&project_id, &uid, &input.content)?;
-    if let Ok(idx) = state.get_or_load_index(&project_id) {
-        let _ = idx.flush();
-    }
 
     get(state, &uid)?.ok_or_else(|| BiError::Internal("memory not found post-insert".into()))
 }
 
 pub fn get(state: &AppState, uid: &str) -> BiResult<Option<Memory>> {
     let conn = state.db.conn()?;
-    match conn.query_row(
+    let mut stmt = conn.prepare_cached(
         "SELECT uid, project_id, mem_type, content, tags, source_agent, importance,
                 supersedes, superseded_by, created_at, updated_at, last_access,
                 access_count, file_path, start_line, end_line, language
          FROM memories WHERE uid = ?1",
-        rusqlite::params![uid],
-        row_to_memory,
-    ) {
+    )?;
+    match stmt.query_row(rusqlite::params![uid], row_to_memory) {
         Ok(m) => Ok(Some(m)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
@@ -173,7 +170,6 @@ pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
     let mem = get(state, uid)?.ok_or_else(|| BiError::NotFound(uid.into()))?;
     if let Ok(idx) = state.get_or_load_index(&mem.project_id) {
         let _ = idx.remove(uid);
-        let _ = idx.flush();
     }
     let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
@@ -213,9 +209,6 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
 
     if input.content.is_some() {
         state.embed_and_add(&existing.project_id, uid, &new_content)?;
-        if let Ok(idx) = state.get_or_load_index(&existing.project_id) {
-            let _ = idx.flush();
-        }
     }
 
     get(state, uid)?.ok_or_else(|| BiError::Internal("memory vanished after update".into()))
@@ -244,13 +237,13 @@ pub fn search(
     if !fts_query.is_empty() {
         let kk_i64 = kk as i64;
         let mut stmt = if let Some(_t) = mem_type {
-            conn.prepare(
+            conn.prepare_cached(
                 "SELECT uid, bm25(memories_fts) FROM memories_fts
                  WHERE memories_fts MATCH ?1 AND mem_type = ?2 AND project_id = ?3
                  ORDER BY bm25(memories_fts) ASC LIMIT ?4",
             )?
         } else {
-            conn.prepare(
+            conn.prepare_cached(
                 "SELECT uid, bm25(memories_fts) FROM memories_fts
                  WHERE memories_fts MATCH ?1 AND project_id = ?2
                  ORDER BY bm25(memories_fts) ASC LIMIT ?3",
@@ -297,51 +290,45 @@ pub fn search(
          FROM memories WHERE uid IN ({})",
         placeholders
     );
-    let mut stmt = conn.prepare(&select_sql)?;
-    let params: Vec<&dyn rusqlite::ToSql> = ranked.iter().map(|(u, _)| u as &dyn rusqlite::ToSql).collect();
+    let mut stmt = conn.prepare_cached(&select_sql)?;
     let by_uid: std::collections::HashMap<String, Memory> = stmt
-        .query_map(params.as_slice(), row_to_memory)?
+        .query_map(
+            rusqlite::params_from_iter(ranked.iter().map(|(u, _)| u.as_str())),
+            row_to_memory,
+        )?
         .filter_map(|r| r.ok())
         .map(|m| (m.uid.clone(), m))
         .collect();
     drop(stmt);
+    drop(conn);
 
+    // Bookkeeping in one transaction: bump access stats for all hits and log a
+    // single activity row for the whole search (not one per hit).
     let now = chrono::Utc::now().timestamp_millis();
-    let update_sql = format!(
-        "UPDATE memories SET access_count = access_count + 1, last_access = ?1 WHERE uid IN ({})",
-        placeholders
-    );
-    let mut upd_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n + 1);
-    upd_params.push(Box::new(now));
-    for (u, _) in &ranked {
-        upd_params.push(Box::new(u.clone()));
-    }
-    let upd_refs: Vec<&dyn rusqlite::ToSql> = upd_params.iter().map(|p| p.as_ref()).collect();
-    conn.execute(&update_sql, upd_refs.as_slice())?;
-
-    let act_placeholders: Vec<String> = (0..n)
-        .map(|i| {
-            let b = i * 6;
-            format!("(?{},?{},?{},?{},?{},?{})", b + 1, b + 2, b + 3, b + 4, b + 5, b + 6)
-        })
-        .collect();
-    let act_sql = format!(
-        "INSERT INTO activity(project_id, agent_id, action, memory_uid, detail, created_at) VALUES {}",
-        act_placeholders.join(",")
-    );
-    let mut act_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n * 6);
-    for (u, _score) in &ranked {
-        act_params.push(Box::new(project_id.clone()));
-        act_params.push(Box::new(Option::<String>::None));
-        act_params.push(Box::new("read"));
-        act_params.push(Box::new(u.clone()));
-        act_params.push(Box::new(
-            serde_json::to_string(&serde_json::json!({"query": query}))?,
-        ));
-        act_params.push(Box::new(now));
-    }
-    let act_refs: Vec<&dyn rusqlite::ToSql> = act_params.iter().map(|p| p.as_ref()).collect();
-    conn.execute(&act_sql, act_refs.as_slice())?;
+    let hit_uids: Vec<String> = ranked.iter().map(|(u, _)| u.clone()).collect();
+    state.db.write(|tx| {
+        let update_sql = format!(
+            "UPDATE memories SET access_count = access_count + 1, last_access = ? WHERE uid IN ({})",
+            placeholders
+        );
+        let mut upd = tx.prepare_cached(&update_sql)?;
+        upd.execute(rusqlite::params_from_iter(
+            std::iter::once(rusqlite::types::Value::Integer(now)).chain(
+                hit_uids
+                    .iter()
+                    .map(|u| rusqlite::types::Value::Text(u.clone())),
+            ),
+        ))?;
+        log_activity(
+            tx,
+            Some(&project_id),
+            None,
+            "read",
+            None,
+            Some(&serde_json::json!({"query": query, "hits": hit_uids})),
+        )?;
+        Ok(())
+    })?;
 
     Ok(ranked
         .into_iter()

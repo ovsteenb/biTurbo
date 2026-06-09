@@ -30,6 +30,7 @@ pub mod mcp;
 pub mod memory;
 pub mod project;
 pub mod scheduler;
+pub mod smoke;
 pub mod state;
 
 pub use error::{BiError, BiResult};

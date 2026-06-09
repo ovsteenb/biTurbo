@@ -12,7 +12,6 @@ use tokio::sync::mpsc;
 
 const INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const STARTUP_DELAY: Duration = Duration::from_secs(60);
-const FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 const JOB_CHANNEL_CAPACITY: usize = 8;
 
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -69,14 +68,8 @@ pub fn spawn(state: Arc<AppState>) {
         }
     });
 
-    // Periodic index flusher (unchanged).
-    let state_for_flusher = state.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(FLUSH_INTERVAL).await;
-            state_for_flusher.flush_all_indices();
-        }
-    });
+    // Index flushing is handled by the thread spawned in AppState::open, which
+    // also covers the standalone MCP binary.
 
     // Manual job worker. Pulls ManualJob values from the shared channel and
     // runs them serially (with the periodic loop) so we never have two

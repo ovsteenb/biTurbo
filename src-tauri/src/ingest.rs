@@ -1,15 +1,19 @@
 use crate::db::{self, log_activity};
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
+use once_cell::sync::Lazy;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::Emitter;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Language, Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
 use ignore::WalkBuilder;
 
 const CHUNK_INSERT_BATCH: usize = 64;
+const PROGRESS_EVERY: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IngestResult {
@@ -68,6 +72,17 @@ struct PendingChunk {
     end_line: i64,
     language: String,
     file_uid: String,
+}
+
+/// Per-file output of the parallel parse phase.
+struct ParsedFile {
+    rel: String,
+    file_uid: String,
+    lang: &'static str,
+    bytes: u64,
+    chunks: Vec<PendingChunk>,
+    imports: Vec<String>,
+    error: Option<String>,
 }
 
 pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResult<IngestResult> {
@@ -130,79 +145,67 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         Ok(())
     })?;
 
+    let total = files.len().max(1);
+
+    // ---- PARALLEL: read + parse + chunk every file across all cores. Each
+    // file is parsed exactly once; chunks and imports come from the same tree.
+    let progress = AtomicUsize::new(0);
+    let parsed: Vec<ParsedFile> = files
+        .par_iter()
+        .map(|path| {
+            let done = progress.fetch_add(1, Ordering::Relaxed);
+            if done % PROGRESS_EVERY == 0 {
+                emit_progress(
+                    state,
+                    project_id,
+                    "parsing",
+                    done,
+                    total,
+                    Some(path.to_string_lossy().to_string()),
+                    0,
+                );
+            }
+            parse_one_file(project_id, root, path)
+        })
+        .collect();
+
+    // ---- Sequential assembly: stable ordering, edge resolution against the
+    // full file set (so forward references resolve too).
     let mut file_uids: BTreeMap<String, String> = BTreeMap::new();
+    for pf in &parsed {
+        if pf.error.is_none() {
+            file_uids.insert(pf.rel.clone(), pf.file_uid.clone());
+        }
+    }
+
     let mut pending_chunks: Vec<PendingChunk> = Vec::new();
     let mut pending_edges: Vec<(String, String, String, f32)> = Vec::new();
-
-    let total = files.len().max(1);
-    for (idx, path) in files.iter().enumerate() {
-        emit_progress(
-            state,
-            project_id,
-            "embedding",
-            idx,
-            total,
-            Some(path.to_string_lossy().to_string()),
-            result.chunks_indexed,
-        );
-        let Some(lang) = detect_language(path) else { continue };
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        result.bytes_processed += source.len() as u64;
-        let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
-        let file_uid = format!("{project_id}::file::{rel}");
-
-        match extract_chunks(path, &source, lang) {
-            Ok(chunks) => {
-                for chunk in chunks {
-                    let uid = format!("{project_id}::{rel}::{}", chunk.start_line);
-                    let embed_text = format!(
-                        "```{lang}\n// {}:{}-{}\n{}```\n{}",
-                        path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                        chunk.start_line,
-                        chunk.end_line,
-                        chunk.code,
-                        chunk.kind,
-                    );
-                    let db_content = format!(
-                        "// {}:{}-{}\n{}",
-                        path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                        chunk.start_line,
-                        chunk.end_line,
-                        chunk.code,
-                    );
-                    pending_chunks.push(PendingChunk {
-                        uid,
-                        content_for_embed: embed_text,
-                        db_content,
-                        file_path: path.to_string_lossy().to_string(),
-                        start_line: chunk.start_line as i64,
-                        end_line: chunk.end_line as i64,
-                        language: lang.to_string(),
-                        file_uid: file_uid.clone(),
-                    });
-                    result.chunks_indexed += 1;
+    for pf in parsed {
+        result.bytes_processed += pf.bytes;
+        if let Some(e) = pf.error {
+            result.errors.push(e);
+            continue;
+        }
+        result.files_indexed += 1;
+        *result.languages.entry(pf.lang.to_string()).or_insert(0) += 1;
+        let abs = root.join(&pf.rel);
+        for imp in &pf.imports {
+            if let Some(target_rel) = resolve_import(imp, &abs, root, &by_basename) {
+                if target_rel == pf.rel {
+                    continue;
                 }
-                file_uids.insert(rel.clone(), file_uid.clone());
-                result.files_indexed += 1;
-                *result.languages.entry(lang.to_string()).or_insert(0) += 1;
-
-                let imports = extract_imports(path, &source, lang);
-                for imp in imports {
-                    if let Some(target_rel) = resolve_import(&imp, path, root, &by_basename) {
-                        if target_rel == rel { continue; }
-                        if let Some(target_file_uid) = file_uids.get(&target_rel) {
-                            pending_edges.push((
-                                file_uid.clone(),
-                                target_file_uid.clone(),
-                                "imports".into(),
-                                1.0,
-                            ));
-                        }
-                    }
+                if let Some(target_file_uid) = file_uids.get(&target_rel) {
+                    pending_edges.push((
+                        pf.file_uid.clone(),
+                        target_file_uid.clone(),
+                        "imports".into(),
+                        1.0,
+                    ));
                 }
             }
-            Err(e) => result.errors.push(format!("{}: {e}", path.display())),
         }
+        result.chunks_indexed += pf.chunks.len();
+        pending_chunks.extend(pf.chunks);
     }
 
     // ---- BATCHED: embed all chunks in one call (fastembed handles batching internally) ----
@@ -210,88 +213,82 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     let embed_texts: Vec<&str> = pending_chunks.iter().map(|c| c.content_for_embed.as_str()).collect();
     let embeddings = state.embedder.embed_batch(&embed_texts)?;
 
-    // ---- BATCHED: insert all chunks + index them, in batches of CHUNK_INSERT_BATCH ----
+    // ---- Vector index: one batched add under a single lock acquisition ----
     let idx = state.get_or_load_index(project_id)?;
-    let mut processed = 0;
-    for batch in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
-        let now = chrono::Utc::now().timestamp_millis();
-        let n = batch.len();
-        let placeholders: Vec<String> = (0..n)
-            .map(|i| {
-                let b = i * 15;
-                format!("(?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{},?{})",
-                    b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8, b+9, b+10, b+11, b+12, b+13, b+14, b+15)
-            })
-            .collect();
-        let sql = format!(
-            "INSERT OR REPLACE INTO memories
-               (uid, project_id, mem_type, content, importance,
-                created_at, updated_at, last_access, access_count,
-                file_path, start_line, end_line, language, tags, source_agent)
-             VALUES {}",
-            placeholders.join(",")
-        );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n * 15);
-        for c in batch {
-            params.push(Box::new(c.uid.clone()));
-            params.push(Box::new(project_id.to_string()));
-            params.push(Box::new("code"));
-            params.push(Box::new(c.db_content.clone()));
-            params.push(Box::new(0.5_f32));
-            params.push(Box::new(now));
-            params.push(Box::new(now));
-            params.push(Box::new(now));
-            params.push(Box::new(0_i64));
-            params.push(Box::new(c.file_path.clone()));
-            params.push(Box::new(c.start_line));
-            params.push(Box::new(c.end_line));
-            params.push(Box::new(c.language.clone()));
-            params.push(Box::new("[]"));
-            params.push(Box::new(Option::<String>::None));
-        }
-        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        state.db.write(|tx| {
-            let mut stmt = tx.prepare(&sql)?;
-            stmt.execute(refs.as_slice())?;
-            Ok(())
-        })?;
-        for (c, emb) in batch.iter().zip(embeddings[processed..processed + n].iter()) {
-            idx.add(&c.uid, emb)?;
-            pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
-        }
-        processed += n;
+    let index_items: Vec<(String, Vec<f32>)> = pending_chunks
+        .iter()
+        .zip(embeddings)
+        .map(|(c, emb)| (c.uid.clone(), emb))
+        .collect();
+    idx.add_batch(&index_items)?;
+    for c in &pending_chunks {
+        pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
     }
     let _ = idx.flush();
 
-    // ---- BATCHED: insert all edges in one multi-row INSERT ----
+    // ---- SQLite: all chunk inserts in ONE transaction (multi-row statements
+    // of CHUNK_INSERT_BATCH rows to stay under the bind-variable limit) ----
+    emit_progress(state, project_id, "writing", total, total, None, result.chunks_indexed);
+    state.db.write(|tx| {
+        let now = chrono::Utc::now().timestamp_millis();
+        for batch in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
+            let n = batch.len();
+            let placeholders = vec!["(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"; n].join(",");
+            let sql = format!(
+                "INSERT OR REPLACE INTO memories
+                   (uid, project_id, mem_type, content, importance,
+                    created_at, updated_at, last_access, access_count,
+                    file_path, start_line, end_line, language, tags, source_agent)
+                 VALUES {placeholders}"
+            );
+            let mut stmt = tx.prepare_cached(&sql)?;
+            let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(n * 15);
+            for c in batch {
+                params.push(c.uid.clone().into());
+                params.push(project_id.to_string().into());
+                params.push("code".to_string().into());
+                params.push(c.db_content.clone().into());
+                params.push(0.5_f64.into());
+                params.push(now.into());
+                params.push(now.into());
+                params.push(now.into());
+                params.push(0_i64.into());
+                params.push(c.file_path.clone().into());
+                params.push(c.start_line.into());
+                params.push(c.end_line.into());
+                params.push(c.language.clone().into());
+                params.push("[]".to_string().into());
+                params.push(rusqlite::types::Value::Null);
+            }
+            stmt.execute(rusqlite::params_from_iter(params))?;
+        }
+        Ok(())
+    })?;
+
+    // ---- SQLite: all edges in ONE transaction, batched the same way ----
     if !pending_edges.is_empty() {
         emit_progress(state, project_id, "edges", total, total, None, result.chunks_indexed);
-        let n = pending_edges.len();
-        let placeholders: Vec<String> = (0..n)
-            .map(|i| {
-                let b = i * 6;
-                format!("(?{},?{},?{},?{},?{},?{})", b+1, b+2, b+3, b+4, b+5, b+6)
-            })
-            .collect();
-        let sql = format!(
-            "INSERT INTO code_edges(project_id, from_uid, to_uid, edge_type, weight, created_at) VALUES {}",
-            placeholders.join(",")
-        );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(n * 6);
         let now = chrono::Utc::now().timestamp_millis();
-        for (from, to, etype, weight) in &pending_edges {
-            params.push(Box::new(project_id.to_string()));
-            params.push(Box::new(from.clone()));
-            params.push(Box::new(to.clone()));
-            params.push(Box::new(etype.clone()));
-            params.push(Box::new(*weight));
-            params.push(Box::new(now));
-        }
-        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         state.db.write(|tx| {
-            let mut stmt = tx.prepare(&sql)?;
-            stmt.execute(refs.as_slice())?;
-            result.edges_created = n;
+            for batch in pending_edges.chunks(512) {
+                let n = batch.len();
+                let placeholders = vec!["(?,?,?,?,?,?)"; n].join(",");
+                let sql = format!(
+                    "INSERT INTO code_edges(project_id, from_uid, to_uid, edge_type, weight, created_at) VALUES {placeholders}"
+                );
+                let mut stmt = tx.prepare_cached(&sql)?;
+                let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(n * 6);
+                for (from, to, etype, weight) in batch {
+                    params.push(project_id.to_string().into());
+                    params.push(from.clone().into());
+                    params.push(to.clone().into());
+                    params.push(etype.clone().into());
+                    params.push((*weight as f64).into());
+                    params.push(now.into());
+                }
+                stmt.execute(rusqlite::params_from_iter(params))?;
+            }
+            result.edges_created = pending_edges.len();
             Ok(())
         })?;
     }
@@ -464,6 +461,95 @@ fn language_for(lang: &str) -> Result<tree_sitter::Language, String> {
     Ok(lang)
 }
 
+/// Compiled grammar + queries for one language. Built once per process —
+/// `Query::new` is expensive and used to run twice per file.
+struct LangBundle {
+    language: Language,
+    chunk_query: Option<Query>,
+    import_query: Option<Query>,
+}
+
+static LANG_BUNDLES: Lazy<HashMap<&'static str, LangBundle>> = Lazy::new(|| {
+    let langs = [
+        "rust", "typescript", "javascript", "python", "go", "swift", "php", "ruby",
+        "java", "c", "cpp", "csharp", "bash", "html", "css",
+    ];
+    let mut map = HashMap::new();
+    for name in langs {
+        let Ok(language) = language_for(name) else { continue };
+        let chunk_query = chunk_query_src(name)
+            .and_then(|src| Query::new(&language, src).ok());
+        let import_query = import_query_src(name)
+            .and_then(|src| Query::new(&language, src).ok());
+        map.insert(name, LangBundle { language, chunk_query, import_query });
+    }
+    map
+});
+
+/// Read, parse (once), and chunk a single file. Runs on a rayon worker.
+fn parse_one_file(project_id: &str, root: &Path, path: &Path) -> ParsedFile {
+    let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
+    let file_uid = format!("{project_id}::file::{rel}");
+    let lang = detect_language(path).unwrap_or("");
+    let mut pf = ParsedFile {
+        rel,
+        file_uid: file_uid.clone(),
+        lang,
+        bytes: 0,
+        chunks: Vec::new(),
+        imports: Vec::new(),
+        error: None,
+    };
+    let Ok(source) = std::fs::read_to_string(path) else {
+        pf.error = Some(format!("{}: unreadable", path.display()));
+        return pf;
+    };
+    pf.bytes = source.len() as u64;
+
+    let Some(bundle) = LANG_BUNDLES.get(lang) else {
+        pf.error = Some(format!("{}: no grammar for {lang}", path.display()));
+        return pf;
+    };
+    let mut parser = Parser::new();
+    if parser.set_language(&bundle.language).is_err() {
+        pf.error = Some(format!("{}: set_language failed", path.display()));
+        return pf;
+    }
+    let Some(tree) = parser.parse(&source, None) else {
+        pf.error = Some(format!("{}: parse failed", path.display()));
+        return pf;
+    };
+    let root_node = tree.root_node();
+
+    let chunks = collect_chunks(bundle, root_node, &source);
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let file_path_str = path.to_string_lossy().to_string();
+    for chunk in chunks {
+        let uid = format!("{project_id}::{}::{}", pf.rel, chunk.start_line);
+        let embed_text = format!(
+            "```{lang}\n// {}:{}-{}\n{}```\n{}",
+            file_name, chunk.start_line, chunk.end_line, chunk.code, chunk.kind,
+        );
+        let db_content = format!(
+            "// {}:{}-{}\n{}",
+            file_name, chunk.start_line, chunk.end_line, chunk.code,
+        );
+        pf.chunks.push(PendingChunk {
+            uid,
+            content_for_embed: embed_text,
+            db_content,
+            file_path: file_path_str.clone(),
+            start_line: chunk.start_line as i64,
+            end_line: chunk.end_line as i64,
+            language: lang.to_string(),
+            file_uid: file_uid.clone(),
+        });
+    }
+
+    pf.imports = collect_imports(bundle, root_node, &source);
+    pf
+}
+
 #[derive(Debug, Clone)]
 struct Chunk {
     kind: String,
@@ -472,13 +558,7 @@ struct Chunk {
     end_line: usize,
 }
 
-fn extract_chunks(_path: &Path, source: &str, lang: &str) -> Result<Vec<Chunk>, String> {
-    let mut parser = Parser::new();
-    let lang_ptr = language_for(lang)?;
-    parser.set_language(&lang_ptr).map_err(|e| e.to_string())?;
-    let tree = parser.parse(source, None).ok_or("parse failed")?;
-    let root = tree.root_node();
-
+fn chunk_query_src(lang: &str) -> Option<&'static str> {
     let query_src = match lang {
         "rust" => r#"
             (function_item name: (identifier) @name) @def
@@ -557,32 +637,40 @@ fn extract_chunks(_path: &Path, source: &str, lang: &str) -> Result<Vec<Chunk>, 
         "css" => r#"
             (rule_set) @def
         "#,
-        _ => return Err(format!("no query for {lang}")),
+        _ => return None,
     };
+    Some(query_src)
+}
 
-    let query = Query::new(&lang_ptr, query_src).map_err(|e| e.to_string())?;
-    let mut cursor = QueryCursor::new();
+/// Walk chunk-query matches over an already-parsed tree.
+fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str) -> Vec<Chunk> {
     let mut chunks = Vec::new();
     let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return chunks;
+    }
 
-    let mut matches = cursor.matches(&query, root, source.as_bytes());
-    while let Some(m) = matches.next() {
-        for cap in m.captures {
-            let node = cap.node;
-            if !matches!(
-                node.kind(),
-                "function_item" | "struct_item" | "enum_item" | "trait_item" | "impl_item"
-                | "function_declaration" | "class_declaration" | "method_definition"
-                | "interface_declaration" | "type_alias_declaration" | "export_statement"
-                | "function_definition" | "class_definition" | "method_declaration" | "type_declaration"
-            ) {
-                continue;
+    if let Some(query) = &bundle.chunk_query {
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, root, source.as_bytes());
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let node = cap.node;
+                if !matches!(
+                    node.kind(),
+                    "function_item" | "struct_item" | "enum_item" | "trait_item" | "impl_item"
+                    | "function_declaration" | "class_declaration" | "method_definition"
+                    | "interface_declaration" | "type_alias_declaration" | "export_statement"
+                    | "function_definition" | "class_definition" | "method_declaration" | "type_declaration"
+                ) {
+                    continue;
+                }
+                let start = node.start_position().row;
+                let end = node.end_position().row.min(start + 200).min(lines.len() - 1);
+                let code = lines[start..=end].join("\n");
+                let kind = node.kind().replace('_', " ");
+                chunks.push(Chunk { kind, code, start_line: start + 1, end_line: end + 1 });
             }
-            let start = node.start_position().row;
-            let end = node.end_position().row.min(start + 200);
-            let code = lines[start..=end].join("\n");
-            let kind = node.kind().replace('_', " ");
-            chunks.push(Chunk { kind, code, start_line: start + 1, end_line: end + 1 });
         }
     }
 
@@ -596,19 +684,10 @@ fn extract_chunks(_path: &Path, source: &str, lang: &str) -> Result<Vec<Chunk>, 
         });
     }
 
-    Ok(chunks)
+    chunks
 }
 
-fn extract_imports(_path: &Path, source: &str, lang: &str) -> Vec<String> {
-    let mut parser = Parser::new();
-    let lang_ptr = match language_for(lang) {
-        Ok(l) => l,
-        Err(_) => return Vec::new(),
-    };
-    if parser.set_language(&lang_ptr).is_err() { return Vec::new() }
-    let Some(tree) = parser.parse(source, None) else { return Vec::new() };
-    let root = tree.root_node();
-
+fn import_query_src(lang: &str) -> Option<&'static str> {
     let query_src = match lang {
         "rust" => r#"
             (use_declaration argument: (_) @imp)
@@ -645,13 +724,17 @@ fn extract_imports(_path: &Path, source: &str, lang: &str) -> Vec<String> {
         "css" => r#"
             (import_statement) @imp
         "#,
-        _ => return Vec::new(),
+        _ => return None,
     };
+    Some(query_src)
+}
 
-    let Ok(query) = Query::new(&lang_ptr, query_src) else { return Vec::new() };
+/// Walk import-query matches over an already-parsed tree.
+fn collect_imports(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str) -> Vec<String> {
+    let Some(query) = &bundle.import_query else { return Vec::new() };
     let mut cursor = QueryCursor::new();
     let mut imports = Vec::new();
-    let mut matches = cursor.matches(&query, root, source.as_bytes());
+    let mut matches = cursor.matches(query, root, source.as_bytes());
     while let Some(m) = matches.next() {
         for cap in m.captures {
             let node = cap.node;
@@ -782,3 +865,42 @@ fn emit_progress(
 
 #[allow(dead_code)]
 fn _unused_hashset() -> HashSet<()> { HashSet::new() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_one_file_extracts_chunks_and_imports() {
+        let dir = std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.rs");
+        std::fs::write(
+            &file,
+            "use std::collections::HashMap;\n\npub struct Thing { x: u32 }\n\npub fn do_it() -> u32 { 42 }\n",
+        )
+        .unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file);
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+        assert_eq!(pf.lang, "rust");
+        assert_eq!(pf.rel, "sample.rs");
+        assert_eq!(pf.file_uid, "proj::file::sample.rs");
+        // struct + fn definitions become chunks.
+        assert!(pf.chunks.len() >= 2, "chunks: {}", pf.chunks.len());
+        assert!(pf.chunks.iter().any(|c| c.db_content.contains("do_it")));
+        // The `use` import is collected.
+        assert!(!pf.imports.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lang_bundles_compile_for_all_languages() {
+        for lang in ["rust", "typescript", "javascript", "python", "go", "swift",
+                     "php", "ruby", "java", "c", "cpp", "csharp", "bash", "css"] {
+            let bundle = LANG_BUNDLES.get(lang).unwrap_or_else(|| panic!("no bundle for {lang}"));
+            assert!(bundle.chunk_query.is_some(), "chunk query failed to compile for {lang}");
+        }
+    }
+}

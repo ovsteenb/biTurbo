@@ -78,7 +78,7 @@ export function Overview() {
           icon={Bot}
           label="Agents"
           value={(stats?.total_agents ?? 0).toLocaleString()}
-          hint={`${stats?.recent_reads_7d ?? 0} reads · 7d`}
+          hint={`${stats?.recent_reads_7d ?? 0} searches · 7d`}
         />
         <StatCard
           icon={Activity}

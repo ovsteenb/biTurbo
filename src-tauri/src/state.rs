@@ -67,6 +67,25 @@ impl AppState {
         // Warm indices for existing projects.
         state.refresh_indices()?;
 
+        // Debounced index flusher. A plain thread (not tokio) so it runs in
+        // every consumer of AppState — the Tauri app AND the standalone MCP
+        // binary. This lets write paths skip their own synchronous full-index
+        // rewrites: they just mark the index dirty and we persist here.
+        {
+            let indices = state.indices.clone();
+            std::thread::Builder::new()
+                .name("biturbo-index-flusher".into())
+                .spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let snapshot: Vec<Arc<ProjectIndex>> =
+                        indices.read().values().cloned().collect();
+                    for idx in snapshot {
+                        let _ = idx.maybe_flush(std::time::Duration::from_millis(300), false);
+                    }
+                })
+                .ok();
+        }
+
         Ok(state)
     }
 

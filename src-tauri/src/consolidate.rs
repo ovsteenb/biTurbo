@@ -87,7 +87,10 @@ fn apply_decay(state: &AppState, project_id: Option<&str>) -> BiResult<usize> {
         }
     };
 
-    let mut touched = 0;
+    // Compute new importances first, then apply every change inside ONE
+    // transaction with a cached statement — previously each row was its own
+    // autocommit transaction.
+    let mut updates: Vec<(String, f32)> = Vec::new();
     for (uid, importance, created_at, access_count, last_access) in rows {
         let age_ms = (now - created_at).max(0) as f64;
         let decay = (-age_ms / half_life_ms as f64).exp();
@@ -99,12 +102,20 @@ fn apply_decay(state: &AppState, project_id: Option<&str>) -> BiResult<usize> {
         };
         let new_imp = (importance * decay + boost).clamp(0.05, 1.0) as f32;
         if (new_imp - importance as f32).abs() > 0.001 {
-            conn.execute(
-                "UPDATE memories SET importance = ?1 WHERE uid = ?2",
-                rusqlite::params![new_imp, uid],
-            )?;
-            touched += 1;
+            updates.push((uid, new_imp));
         }
+    }
+    drop(conn);
+    let touched = updates.len();
+    if !updates.is_empty() {
+        state.db.write(|tx| {
+            let mut stmt =
+                tx.prepare_cached("UPDATE memories SET importance = ?1 WHERE uid = ?2")?;
+            for (uid, new_imp) in &updates {
+                stmt.execute(rusqlite::params![new_imp, uid])?;
+            }
+            Ok(())
+        })?;
     }
     Ok(touched)
 }
@@ -126,10 +137,19 @@ fn find_duplicates(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(
     let mut dupes = Vec::new();
     for pid in project_ids {
         let mems: Vec<Memory> = memory::list(state, Some(&pid), None, 5000, 0)?;
+        if mems.is_empty() {
+            continue;
+        }
         // Build a uid→imp map and uid→Memory map for O(1) lookup during dedup.
         let by_uid: std::collections::HashMap<&str, &Memory> = mems.iter().map(|m| (m.uid.as_str(), m)).collect();
-        for a in &mems {
-            let hits = state.embed_and_search(&pid, &a.content, 5, None)?;
+        // Embed every memory in one batched call (one ONNX session pass)
+        // instead of one embed per memory, then run the cheap vector searches
+        // against the precomputed embeddings.
+        let texts: Vec<&str> = mems.iter().map(|m| m.content.as_str()).collect();
+        let embeddings = state.embedder.embed_batch(&texts)?;
+        let idx = state.get_or_load_index(&pid)?;
+        for (a, vec) in mems.iter().zip(&embeddings) {
+            let hits = idx.search(vec, 5, None)?;
             for h in hits {
                 if h.score < 0.95 || h.uid == a.uid {
                     continue;

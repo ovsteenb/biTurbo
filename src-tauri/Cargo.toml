@@ -72,6 +72,7 @@ tree-sitter-html = "0.23"
 tree-sitter-css = "0.25"
 
 # Utilities
+rayon = "1"
 walkdir = "2"
 ignore = "0.4"
 notify = "7"
@@ -95,6 +96,14 @@ custom-protocol = ["tauri/custom-protocol"]
 [profile.release]
 panic = "abort"
 codegen-units = 1
-lto = true
-opt-level = "s"
+lto = "fat"
+# opt-level 3 (not "s"): this crate is compute-bound — Hamming/dot-product scans
+# in turbovec, ONNX pre/post-processing, tree-sitter parsing. Size-optimized
+# builds disable the vectorization and inlining these depend on.
+opt-level = 3
 strip = true
+
+# Dev builds: keep this crate fast to compile, but compile dependencies
+# (turbovec, ort, tree-sitter grammars) optimized so debug runs aren't 10-50x slower.
+[profile.dev.package."*"]
+opt-level = 3
