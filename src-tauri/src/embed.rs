@@ -1,23 +1,16 @@
 use crate::error::{BiError, BiResult};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use ort::execution_providers::CPUExecutionProvider;
+use hex;
 use lru::LruCache;
 use once_cell::sync::Lazy;
+use ort::execution_providers::CPUExecutionProvider;
 use parking_lot::{Mutex, RwLock};
-use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Global thread pool capped at 2 threads so embedding doesn't freeze the laptop.
-/// Created once on first use; all bulk embedding goes through this pool.
-static EMBED_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
-            .thread_name(|i| format!("biturbo-embed-{i}"))
-            .build()
-            .expect("embed thread pool")
-    });
+static EMBED_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 pub const DEFAULT_DIM: usize = 384;
 pub const DEFAULT_MODEL: &str = "BGE-small-en-v1.5";
@@ -67,99 +60,82 @@ impl Embedder {
     }
 
     pub fn embed(&self, text: &str) -> BiResult<Vec<f32>> {
-        if let Some(v) = self.query_cache.lock().get(text) {
-            return Ok(v.clone());
-        }
-        self.ensure_model()?;
-        let guard = self.model.read();
-        let model = guard
-            .as_ref()
-            .ok_or_else(|| BiError::Embed("model released mid-embed".into()))?;
-        let mut results = model
-            .embed(vec![text], None)
-            .map_err(|e| BiError::Embed(format!("embed: {e}")))?;
-        drop(guard);
-        if results.is_empty() {
-            return Err(BiError::Embed("no embedding returned".into()));
-        }
-        let v = results.remove(0);
-        self.query_cache.lock().put(text.to_string(), v.clone());
-        Ok(v)
+        let mut out = self.embed_batch(&[text])?;
+        Ok(out.remove(0))
     }
 
     pub fn embed_batch(&self, texts: &[&str]) -> BiResult<Vec<Vec<f32>>> {
-        self.ensure_model()?;
-        let mut to_compute: Vec<usize> = Vec::new();
         let mut cached: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let mut missing: Vec<(usize, &str)> = Vec::new();
         {
             let mut cache = self.query_cache.lock();
-            for (i, t) in texts.iter().enumerate() {
-                if let Some(v) = cache.get(*t) {
+            for (i, text) in texts.iter().enumerate() {
+                let key = cache_key(text);
+                if let Some(v) = cache.get(&key) {
                     cached[i] = Some(v.clone());
                 } else {
-                    to_compute.push(i);
+                    missing.push((i, *text));
                 }
             }
         }
-        if !to_compute.is_empty() {
-            let missing: Vec<&str> = to_compute.iter().map(|&i| texts[i]).collect();
-            let guard = self.model.read();
-            let model = guard
-                .as_ref()
-                .ok_or_else(|| BiError::Embed("model released mid-embed".into()))?;
-            let new_results = model
-                .embed(missing, None)
-                .map_err(|e| BiError::Embed(format!("embed_batch: {e}")))?;
-            drop(guard);
+
+        if !missing.is_empty() {
+            let missing_texts: Vec<&str> = missing.iter().map(|(_, t)| *t).collect();
+            let mut computed = Vec::with_capacity(missing.len());
+            self.embed_batch_uncached_stream(&missing_texts, |_chunk, results| {
+                computed.extend(results);
+                Ok(())
+            })?;
+
             let mut cache = self.query_cache.lock();
-            for (idx, v) in to_compute.iter().zip(new_results) {
-                cache.put(texts[*idx].to_string(), v.clone());
+            for ((idx, text), v) in missing.iter().zip(computed) {
+                let key = cache_key(text);
+                cache.put(key, v.clone());
                 cached[*idx] = Some(v);
             }
         }
+
         Ok(cached.into_iter().map(|o| o.unwrap()).collect())
     }
 
     /// Uncached bulk embedding for large batches (e.g., project ingest).
-    /// Skips the LRU cache to avoid pollution and uses an explicit small batch
-    /// size to bound ONNX arena memory. Processes in chunks of EMBED_BATCH.
-    /// Limited to 2 threads so the laptop stays responsive during long ingests.
+    /// Skips the LRU cache to avoid pollution and streams results in small
+    /// batches so callers can drop embeddings as soon as they are consumed.
     pub fn embed_batch_uncached(&self, texts: &[&str]) -> BiResult<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(texts.len());
+        self.embed_batch_uncached_stream(texts, |_chunk, results| {
+            out.extend(results);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    pub fn embed_batch_uncached_stream<F>(&self, texts: &[&str], mut on_batch: F) -> BiResult<()>
+    where
+        F: FnMut(&[&str], Vec<Vec<f32>>) -> BiResult<()>,
+    {
         self.ensure_model()?;
+        let _guard = EMBED_LOCK.lock();
         let guard = self.model.read();
         let model = guard
             .as_ref()
             .ok_or_else(|| BiError::Embed("model released mid-embed".into()))?;
 
-        let model_ref = &*model;
-
-        // Run through the capped thread pool so the laptop stays responsive.
-        let all_results: Vec<Vec<Vec<f32>>> = EMBED_POOL.install(|| {
-            texts
-                .par_chunks(EMBED_BATCH)
-                .map(|chunk: &[&str]| {
-                    let results = model_ref
-                        .embed(chunk.to_vec(), Some(EMBED_BATCH))
-                        .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
-                    Ok(results)
-                })
-                .collect::<Result<Vec<_>, BiError>>()
-        })?;
-
-        drop(guard);
-
-        // Flatten the results in order
-        let mut flattened = Vec::with_capacity(texts.len());
-        for mut chunk_results in all_results {
-            flattened.append(&mut chunk_results);
+        for chunk in texts.chunks(EMBED_BATCH) {
+            let results = model
+                .embed(chunk.to_vec(), Some(EMBED_BATCH))
+                .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
+            on_batch(chunk, results)?;
         }
-        Ok(flattened)
+
+        Ok(())
     }
 
     pub fn release_if_idle(&self) {
         if self.last_used.lock().elapsed() < IDLE_RELEASE {
             return;
         }
+        let _guard = EMBED_LOCK.lock();
         *self.model.write() = None;
         *self.last_used.lock() = Instant::now();
     }
@@ -167,6 +143,7 @@ impl Embedder {
     /// Force immediate model release — call after heavy workloads like ingest
     /// to free ONNX session memory and threads immediately.
     pub fn force_release(&self) {
+        let _guard = EMBED_LOCK.lock();
         *self.model.write() = None;
         *self.last_used.lock() = Instant::now();
     }
@@ -206,4 +183,10 @@ fn load_model(model_enum: EmbeddingModel) -> BiResult<TextEmbedding> {
                 .join("biturbo/models"),
         );
     TextEmbedding::try_new(opts).map_err(|e| BiError::Embed(format!("init: {e}")))
+}
+
+fn cache_key(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hex::encode(hasher.finalize())
 }

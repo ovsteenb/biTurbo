@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, OptionalExtension};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -180,6 +181,18 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
     WHERE uid = old.uid;
 END;
 
+CREATE TABLE IF NOT EXISTS indexed_files (
+    project_id  TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    file_hash   TEXT NOT NULL,
+    language    TEXT NOT NULL,
+    imports_json TEXT NOT NULL DEFAULT '[]',
+    indexed_at  INTEGER NOT NULL,
+    PRIMARY KEY(project_id, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_indexed_files_project ON indexed_files(project_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -244,6 +257,135 @@ pub fn set_setting(conn: &rusqlite::Connection, key: &str, value: &str) -> BiRes
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         params![key, value],
     )?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexedFileInfo {
+    pub file_hash: String,
+    pub language: String,
+    pub imports: Vec<String>,
+}
+
+pub fn get_indexed_files(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> BiResult<HashMap<String, IndexedFileInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path, file_hash, language, imports_json
+         FROM indexed_files
+         WHERE project_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![project_id], |r| {
+        let imports_json: Option<String> = r.get(3)?;
+        let imports = imports_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        Ok(IndexedFileInfo {
+            file_hash: r.get::<_, String>(1)?,
+            language: r.get::<_, String>(2)?,
+            imports,
+        })
+    })?;
+    let mut out = HashMap::new();
+    for row in rows.filter_map(|r| r.ok()) {
+        let file_path: String = row
+            .file_path
+            .clone();
+        out.insert(file_path, row);
+    }
+    Ok(out)
+}
+
+pub fn upsert_indexed_file(
+    tx: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    file_path: &str,
+    file_hash: &str,
+    language: &str,
+    imports: &[String],
+    now: i64,
+) -> BiResult<()> {
+    let imports_json = serde_json::to_string(imports)?;
+    tx.execute(
+        "INSERT INTO indexed_files(project_id, file_path, file_hash, language, imports_json, indexed_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(project_id, file_path) DO UPDATE SET
+            file_hash = excluded.file_hash,
+            language = excluded.language,
+            imports_json = excluded.imports_json,
+            indexed_at = excluded.indexed_at",
+        params![project_id, file_path, file_hash, language, imports_json, now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_indexed_file(
+    tx: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    file_path: &str,
+) -> BiResult<()> {
+    tx.execute(
+        "DELETE FROM indexed_files WHERE project_id = ?1 AND file_path = ?2",
+        params![project_id, file_path],
+    )?;
+    Ok(())
+}
+
+pub fn code_uids_for_file(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    file_path: &str,
+) -> BiResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT uid FROM memories
+         WHERE project_id = ?1 AND mem_type = 'code' AND file_path = ?2
+         ORDER BY start_line",
+    )?;
+    let rows = stmt.query_map(params![project_id, file_path], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn delete_memories_by_uids(
+    tx: &rusqlite::Transaction<'_>,
+    uids: &[String],
+) -> BiResult<()> {
+    for chunk in uids.chunks(400) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM memories WHERE uid IN ({placeholders})");
+        let mut stmt = tx.prepare(&sql)?;
+        stmt.execute(rusqlite::params_from_iter(
+            chunk.iter().map(|uid| uid.as_str()),
+        ))?;
+    }
+    Ok(())
+}
+
+pub fn delete_code_edges_for_files(
+    tx: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    file_uids: &[String],
+) -> BiResult<()> {
+    for chunk in file_uids.chunks(400) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "DELETE FROM code_edges
+             WHERE project_id = ?1 AND (from_uid IN ({placeholders}) OR to_uid IN ({placeholders}))"
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(1 + chunk.len() * 2);
+        params.push(project_id.to_string().into());
+        params.extend(chunk.iter().cloned().map(rusqlite::types::Value::Text));
+        params.extend(chunk.iter().cloned().map(rusqlite::types::Value::Text));
+        stmt.execute(rusqlite::params_from_iter(params))?;
+    }
     Ok(())
 }
 

@@ -101,17 +101,22 @@ impl ProjectIndex {
             return Ok(());
         }
         let mut inner = self.inner.lock();
-        // Replace any existing uids first.
         let mut flat: Vec<f32> = Vec::with_capacity(items.len() * self.dim);
         let mut ids: Vec<u64> = Vec::with_capacity(items.len());
         for (uid, vector) in items {
             assert_eq!(vector.len(), self.dim, "vector dim mismatch");
-            if let Some(&extid) = inner.uid_to_extid.get(uid) {
-                let _ = inner.index.remove(extid);
-                inner.extid_to_uid.remove(&extid);
-            }
-            let extid = inner.next_extid;
-            inner.next_extid += 1;
+            let extid = match inner.uid_to_extid.get(uid) {
+                Some(&id) => {
+                    let _ = inner.index.remove(id);
+                    inner.extid_to_uid.remove(&id);
+                    id
+                }
+                None => {
+                    let id = inner.next_extid;
+                    inner.next_extid += 1;
+                    id
+                }
+            };
             inner.uid_to_extid.insert(uid.clone(), extid);
             inner.extid_to_uid.insert(extid, uid.clone());
             ids.push(extid);
@@ -262,12 +267,18 @@ impl ProjectIndex {
 
 impl Inner {
     fn add_one(&mut self, uid: &str, vector: &[f32]) -> BiResult<()> {
-        if let Some(&extid) = self.uid_to_extid.get(uid) {
-            let _ = self.index.remove(extid);
-            self.extid_to_uid.remove(&extid);
-        }
-        let extid = self.next_extid;
-        self.next_extid += 1;
+        let extid = match self.uid_to_extid.get(uid) {
+            Some(&id) => {
+                let _ = self.index.remove(id);
+                self.extid_to_uid.remove(&id);
+                id
+            }
+            None => {
+                let id = self.next_extid;
+                self.next_extid += 1;
+                id
+            }
+        };
         self.index
             .add_with_ids(vector, &[extid])
             .map_err(|e| BiError::Index(format!("add: {e}")))?;

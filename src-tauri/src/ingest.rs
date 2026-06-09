@@ -5,6 +5,7 @@ use ignore::WalkBuilder;
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,10 +14,13 @@ use tauri::Emitter;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 const CHUNK_INSERT_BATCH: usize = 64;
+const INDEX_BATCH: usize = 64;
+const EMBED_BATCH: usize = 32;
 const PROGRESS_EVERY: usize = 16;
-/// Wave size for streaming embeddings: process EMBED_WAVE chunks at a time
-/// to bound memory and emit progress during the embedding phase.
-const EMBED_WAVE: usize = 512;
+const MAX_CHUNK_TEXT: usize = 4000;
+/// Wave size is intentionally equal to the DB write batch size; embedding now
+/// streams smaller ONNX batches internally, so this only bounds pending chunk
+/// work and progress reporting.
 
 /// Capped thread pool for parallel file parsing. Tree-sitter parse trees are
 /// 10–30× the size of source files, so running on all cores concurrently can
@@ -90,8 +94,7 @@ pub struct GraphEdge {
 
 struct PendingChunk {
     uid: String,
-    content_for_embed: String,
-    db_content: String,
+    code: String,
     file_path: String,
     start_line: i64,
     end_line: i64,
@@ -105,6 +108,7 @@ struct ParsedFile {
     file_uid: String,
     lang: &'static str,
     bytes: u64,
+    file_hash: String,
     chunks: Vec<PendingChunk>,
     imports: Vec<String>,
     error: Option<String>,
@@ -128,12 +132,17 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         .git_global(true)
         .git_exclude(true)
         .ignore(true)
-        .hidden(true)
+        .hidden(false)
         .build()
         .filter_map(|r| r.ok())
         .filter(|e| e.path().is_file())
         .filter_map(|e| detect_language(e.path()).map(|_| e.path().to_path_buf()))
         .collect();
+
+    let conn = state.db.conn()?;
+    let existing_files = db::get_indexed_files(&conn, project_id)?;
+    let mut file_hashes: HashMap<String, String> = HashMap::new();
+    drop(conn);
 
     let mut by_basename: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for f in &files {
