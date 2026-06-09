@@ -223,13 +223,14 @@ export function Graph() {
   }
 
   function onMouseMove(e: React.MouseEvent) {
-    if (!dragRef.current) return;
-    const dx = e.clientX - dragRef.current.x;
-    const dy = e.clientY - dragRef.current.y;
+    const drag = dragRef.current;
+    if (!drag) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
     setView((v) => ({
       ...v,
-      x: dragRef.current!.vx + dx,
-      y: dragRef.current!.vy + dy,
+      x: drag.vx + dx,
+      y: drag.vy + dy,
     }));
   }
 
