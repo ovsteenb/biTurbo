@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_DIM: usize = 384;
 pub const DEFAULT_MODEL: &str = "BGE-small-en-v1.5";
 const QUERY_CACHE_CAP: usize = 256;
-const IDLE_RELEASE: Duration = Duration::from_secs(60 * 60);
+const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
 /// Explicit batch size for uncached bulk embeddings. Bounded to keep ONNX
 /// arena memory low (32 texts × 512 tokens ≈ few hundred MB vs multi-GB).
 const EMBED_BATCH: usize = 32;
@@ -148,6 +148,13 @@ impl Embedder {
         *self.last_used.lock() = Instant::now();
     }
 
+    /// Force immediate model release — call after heavy workloads like ingest
+    /// to free ONNX session memory and threads immediately.
+    pub fn force_release(&self) {
+        *self.model.write() = None;
+        *self.last_used.lock() = Instant::now();
+    }
+
     pub fn cache_len(&self) -> usize {
         self.query_cache.lock().len()
     }
@@ -168,6 +175,11 @@ fn resolve_model(name: &str) -> BiResult<(EmbeddingModel, &'static str, usize)> 
 }
 
 fn load_model(model_enum: EmbeddingModel) -> BiResult<TextEmbedding> {
+    // Force CPU-only execution — disable CoreML/Metal GPU to prevent
+    // high GPU usage and thermal throttling on Apple Silicon.
+    std::env::set_var("ORT_DISABLE_CORE_ML", "1");
+    std::env::set_var("ORT_DNNL_DISABLE", "1");
+
     let opts = InitOptions::new(model_enum)
         .with_show_download_progress(false)
         .with_cache_dir(

@@ -76,7 +76,7 @@ impl AppState {
             std::thread::Builder::new()
                 .name("biturbo-index-flusher".into())
                 .spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    std::thread::sleep(std::time::Duration::from_secs(5));
                     let snapshot: Vec<Arc<ProjectIndex>> =
                         indices.read().values().cloned().collect();
                     for idx in snapshot {

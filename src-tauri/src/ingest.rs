@@ -366,7 +366,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         Ok(())
     })?;
 
-    state.embedder.release_if_idle();
+    state.embedder.force_release();
 
     Ok(result)
 }
@@ -408,6 +408,8 @@ pub fn ingest_multiple_projects(
             }
         }
     }
+
+    state.embedder.force_release();
 
     Ok(multi_result)
 }
