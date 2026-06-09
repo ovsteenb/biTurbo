@@ -19,21 +19,49 @@ export function Settings() {
     const start = "\u003cbiturbo-rule-start project=\"" + pid + "\"\u003e";
     const end = "\u003c/biturbo-rule-start\u003e";
     return `${start}
-You have access to biTurbo, a local-first memory layer, via MCP. Before every non-trivial
-answer in this project, call \`recall_for_context\` with the user's last message as the
-query and project_id="${pid}", then inject the returned \u003cbiTurboContext\u003e block as
-authoritative context for the rest of the turn.
+## biTurbo memory rules for project "${pid}"
 
-Store durable knowledge with \`remember\`:
-- mem_type: fact | decision | preference | pattern | episode | reflection
-- project_id: "${pid}"  (always scope to this project)
-- importance: 0.7+ for cross-session rules, 0.4-0.6 for typical, 0.2 for ephemeral
-- source_agent: your agent name (e.g. "Mavis")
+You have access to biTurbo, a persistent semantic memory layer via MCP.
 
-Forget stale or wrong memories with \`forget\`. Never store secrets, tokens, or PII.
+### Core loop — follow this EVERY turn:
 
-Index the project code with \`ingest_project\` once per project, then search semantically
-with the same recall flow before answering questions about the code.
+1. **RECALL** — call \`recall_for_context(query=<user msg>, project_id="${pid}", k=8)\`
+2. **ANSWER** — respond using the recalled context
+3. **REMEMBER** — call \`remember()\` after every response to store durable information
+
+### When to \`remember\` (call AFTER EVERY response):
+
+- User states a fact about themselves/environment/project → \`fact\`
+- You make a decision with rationale → \`decision\`
+- User expresses a preference (style, verbosity, tools) → \`preference\`
+- User corrects you → \`fact\` with \`supersedes\`
+- You discover a codebase pattern → \`pattern\`
+- Something noteworthy happened → \`episode\` with timestamp
+- Meta-observation about work → \`reflection\`
+- ❌ Transient state — don't remember
+- ❌ Public knowledge — don't remember
+- ❌ Secrets, tokens, PII — NEVER
+
+### Memory types:
+\`fact\`, \`decision\`, \`preference\`, \`pattern\`, \`episode\`, \`reflection\`, \`code\` (auto)
+
+### Importance (0-1):
+- 0.8-1.0: cross-project rules, key decisions
+- 0.5-0.7: typical (default 0.6)
+- 0.2-0.4: specific/stale details
+
+### Tags: 1-3 per memory. Good: \`auth\`, \`ui\`, \`db\`, \`api\`. Bad: \`important\`, \`todo\`.
+
+### Session:
+- START → \`register_agent(name, kind)\`, \`list_projects()\`
+- EVERY TURN → recall → answer → remember
+- END → \`consolidate(project_id)\`, final \`remember\`
+
+### Anti-patterns:
+- Don't dump 10k memories — use recall_for_context k=5-10
+- Don't skip recall — amnesia is worse than no tool
+- Don't cross-project leak — always pass project_id="${pid}"
+- Never store secrets, tokens, PII
 ${end}`;
   }, [currentProjectId]);
 
@@ -41,19 +69,41 @@ ${end}`;
     const start = "\u003cbiturbo-rule-start scope=\"global\"\u003e";
     const end = "\u003c/biturbo-rule-start\u003e";
     return `${start}
-You have access to biTurbo, a local-first memory layer, via MCP. Project-agnostic
-preferences and cross-project facts live here. Before answering non-trivial questions,
-call \`recall_for_context\` with the user's message (omit project_id or set to "default")
-to surface relevant prior context.
+## biTurbo memory rules (global / cross-project)
 
-Store cross-cutting knowledge with \`remember\` and project_id="default":
-- mem_type: fact | decision | preference | pattern | reflection
-- importance: 0.7+ for life rules, lower for transient
-- source_agent: your agent name
+You have access to biTurbo, a persistent semantic memory layer via MCP.
+Project-agnostic preferences and cross-project facts live here.
 
-When working inside a specific project, scope memories with that project's id. Use
-\`list_projects\` to discover them. Forget with \`forget\` when something is wrong or stale.
-Never store secrets, tokens, or PII.
+### Core loop — follow this EVERY turn:
+
+1. **RECALL** — call \`recall_for_context(query=<user msg>, project_id="default", k=8)\`
+2. **ANSWER** — respond using the recalled context
+3. **REMEMBER** — call \`remember()\` after every response to store durable information
+
+### When to \`remember\` (call AFTER EVERY response):
+
+- User states a cross-project fact → \`fact\`
+- You make a decision with rationale → \`decision\`
+- User expresses a preference → \`preference\`
+- You discover a pattern → \`pattern\`
+- Something noteworthy happened → \`episode\`
+
+### Memory types:
+\`fact\`, \`decision\`, \`preference\`, \`pattern\`, \`episode\`, \`reflection\`
+
+### Importance (0-1):
+- 0.8-1.0: life rules, key decisions
+- 0.5-0.7: typical (default 0.6)
+
+### Session:
+- START → \`register_agent\`, \`list_projects()\`
+- EVERY TURN → recall → answer → remember
+- END → \`consolidate\`
+
+### Anti-patterns:
+- Don't skip recall
+- When working in a project, scope memories with that project_id
+- Never store secrets, tokens, PII
 ${end}`;
   }, []);
 

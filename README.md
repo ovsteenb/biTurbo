@@ -1,78 +1,120 @@
+<div align="center">
+
 # biTurbo
 
-**Local-first memory layer for AI coding agents.** Pure-Rust Tauri 2 desktop app + stdio MCP server, built on Google's [TurboQuant](https://arxiv.org/abs/2504.19874) via the [turbovec](https://github.com/RyanCodrai/turbovec) crate (16× vector compression vs float32, MIT, beats FAISS on ARM).
+**Local-first memory layer for AI coding agents.**
 
-Give your AI agents (Mavis, Claude Code, Cursor, Cline, anything MCP) persistent, project-scoped, semantic memory. Everything stays on disk. Search it, browse it, index whole codebases with tree-sitter, run decay / dedup / merge on a schedule.
+Persistent · project-scoped · semantic · MCP-native.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  biTurbo (single binary)                                │
-│                                                          │
-│   Tauri 2 GUI  ──┐                                       │
-│                  │                                       │
-│   MCP stdio  ────┼──→  AppState                          │
-│                  │      ├── SQLite (metadata)            │
-│   ingest  ───────┘      ├── turbovec IdMapIndex per proj │
-│   (tree-sitter)         ├── fastembed (BGE-small ONNX)   │
-│                         └── activity audit log           │
-└─────────────────────────────────────────────────────────┘
-```
+[Features](#why) · [Install](#install) · [Quick use](#quick-use) · [MCP setup](#mcp-setup) · [Roadmap](#roadmap) · [Stack](#stack)
+
+<br/>
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)
+[![Rust 1.77+](https://img.shields.io/badge/rust-1.77%2B-D4A574.svg)](https://www.rust-lang.org)
+[![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
+[![MCP](https://img.shields.io/badge/MCP-19%20tools-C7A0E0.svg)](#mcp-tools)
+[![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
+[![pnpm 11](https://img.shields.io/badge/pnpm-11-E8E2D6.svg)](https://pnpm.io)
+
+</div>
+
+---
 
 ## Why
 
-- **Memory is the missing primitive for AI agents.** Every session = blank slate. biTurbo fixes that.
-- **Local-first.** No cloud, no SaaS, no embedding leakage. Your context stays on your disk.
-- **Multi-project.** Per-project indices with hybrid allowlist filters. testy memories don't pollute scout-qa.
-- **Maximum compression.** turbovec 4-bit = 16× smaller than float32. A million memories fit in laptop RAM.
-- **MCP-native.** 16 tools. Any agent that speaks MCP can read, write, search, ingest, consolidate.
-- **Tree-sitter indexed code.** Drop a folder, get semantic code search. "Where is auth handled?"
+Every AI coding session starts blank. biTurbo gives your agents **persistent, project-scoped, semantic memory** that lives on your disk. No cloud, no SaaS, no embedding leakage.
 
-## Quick start
+- **One binary.** Pure Rust, cold start < 50ms, no Python env, no Docker.
+- **MCP-native.** 19 tools. Plugs into Mavis, Claude Code, Cursor, Cline, anything that speaks MCP.
+- **Per-project isolation.** testy memories never pollute scout-qa.
+- **Maximum compression.** [turbovec 4-bit](https://github.com/RyanCodrai/turbovec) = 16× smaller than float32. A million memories fit in laptop RAM.
+- **Tree-sitter code indexing.** Drop a folder, get semantic code search. *"Where is auth handled?"*
+- **Self-maintaining.** Scheduled decay / dedup / merge. The index doesn't rot.
 
-Requires: `pnpm 11+`, `node 20+`, `rustc 1.77+`.
+```
+┌──────────────────────────────────────────────────────────┐
+│  biTurbo (single binary)                                 │
+│                                                           │
+│   Tauri 2 GUI  ──┐                                        │
+│                  │                                        │
+│   MCP stdio  ────┼──→  AppState  (parking_lot::RwLock)    │
+│                  │      ├── SQLite (metadata, r2d2 pool)  │
+│   ingest  ───────┘      ├── turbovec IdMapIndex per proj  │
+│   (tree-sitter)         ├── fastembed (BGE-small ONNX)    │
+│                         └── activity audit log            │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Install
+
+Requires: **pnpm 11+**, **node 20+**, **rustc 1.77+**, **macOS / Linux** (Windows untested).
 
 ```bash
-# 1. install deps
+# 1. Clone & enter
+git clone https://github.com/RyanCodrai/biturbo.git
+cd biturbo
+
+# 2. JS deps
 pnpm install
 
-# 2. run desktop app (dev mode, hot-reload)
+# 3. Rust binary (release)
+pnpm mcp:build           # writes target/debug/biturbo-mcp
+# or for max speed:
+cd src-tauri && cargo build --release --bin biturbo-mcp
+```
+
+For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your platform (Xcode CLT on macOS, webkit2gtk on Linux).
+
+### Verify
+
+```bash
+# the MCP binary should sit waiting for JSON-RPC on stdin
+target/debug/biturbo-mcp < /dev/null
+```
+
+Smoke-test all 19 tools against a real binary in ~2 seconds:
+
+```bash
+pnpm mcp:test
+# → 19 pass · 0 fail · 0 skip
+```
+
+---
+
+## Quick use
+
+### Desktop app
+
+```bash
 pnpm tauri:dev
-
-# 3. in another shell — run MCP server standalone
-pnpm mcp:dev
 ```
 
-On first launch, the embedder downloads `BGE-small-en` (~30 MB) into your OS cache. Subsequent launches are instant.
+Opens the Tauri 2 window. First launch downloads `BGE-small-en` (~30 MB) into your OS cache — next launches are instant.
 
-## Project structure
+| View | What it does |
+|---|---|
+| **Overview** | Stats, heatmap, recent activity, connected agents |
+| **Memories** | Search, filter by type / tag / importance, inspect, edit, forget |
+| **Projects** | Create, ingest code, switch, export, delete |
+| **Graph** | Canvas-rendered code dependency graph with viewport culling |
+| **Agents** | List of MCP-connected agents, last-seen, write counts |
+| **Settings** | Theme, data dir, MCP config snippets, agent rule blocks |
 
-```
-biTurbo/
-├── src/                          React + Vite + Tailwind frontend
-│   ├── views/                    Overview · Memories · Projects · Agents · Settings
-│   ├── components/               Sidebar · TopBar · MemoryCard · MemoryDetail · QuickAdd · Heatmap · Toast
-│   └── lib/                      api.ts (Tauri invoke) · store.ts (zustand) · types.ts · format.ts
-├── src-tauri/                    Rust backend
-│   ├── src/
-│   │   ├── main.rs               Tauri entry
-│   │   ├── lib.rs                Tauri builder + IPC registration
-│   │   ├── state.rs              AppState (shared, mpsc-free, behind parking_lot::RwLock)
-│   │   ├── db.rs                 SQLite + r2d2 pool + schema
-│   │   ├── index_engine.rs       turbovec IdMapIndex wrapper (1 file per project)
-│   │   ├── embed.rs              fastembed (BGE-small-en default)
-│   │   ├── memory.rs             CRUD + search + types
-│   │   ├── project.rs            multi-project isolation
-│   │   ├── ingest.rs             tree-sitter project walker (rust/ts/js/py/go)
-│   │   ├── consolidate.rs        decay / dedup / merge
-│   │   ├── mcp.rs                rmcp stdio server (16 tools)
-│   │   └── commands.rs           Tauri IPC handlers
-│   └── bin/biturbo_mcp.rs        Standalone MCP server binary
-├── INSTRUCTIONS.md               Rules for AI agents using the MCP tools — read this!
-├── README.md                     You are here.
-└── pnpm-workspace.yaml           esbuild allowBuilds (pnpm 11 strict)
+Theme: click the sun/moon in the top bar. Persists per device, respects OS preference on first run.
+
+```bash
+# quick keyboard shortcuts
+⌘K       Quick add memory
+⌘/       Focus search
+Esc      Close modal / menu
 ```
 
-## MCP setup (for AI agents)
+---
+
+## MCP setup
 
 The standalone `biturbo-mcp` binary speaks MCP over stdio. Add it to your agent's MCP config:
 
@@ -80,58 +122,137 @@ The standalone `biturbo-mcp` binary speaks MCP over stdio. Add it to your agent'
 {
   "mcpServers": {
     "biturbo": {
-      "command": "/Users/you/.cargo/bin/biturbo-mcp",
-      "args": []
+      "command": "/Users/lxxfysl/Projekte/biTurbo/src-tauri/target/debug/biturbo-mcp",
+      "args": [],
+      "env": {}
     }
   }
 }
 ```
 
+> **Tip:** swap the path for `biturbo-mcp` only after `cargo install --path src-tauri --bin biturbo-mcp` puts it on `$PATH`. Use the absolute path during dev — zero setup.
+
 The first time an agent connects, it should:
 
-1. Call `register_agent(name=..., kind=...)` so its writes are attributed.
-2. Call `list_projects()` to see existing projects.
-3. Call `recall_for_context(query, project_id, k=8)` before answering each turn.
+1. Call `register_agent(name=..., kind=...)` — writes get attributed.
+2. Call `list_projects()` — discover existing projects.
+3. Call `recall_for_context(query, project_id, k=8)` — **before every non-trivial answer**, inject the returned `<biTurboContext>` block as authoritative context.
 
-See [INSTRUCTIONS.md](./INSTRUCTIONS.md) for the full ruleset, tool reference, and anti-patterns.
+Full ruleset, anti-patterns, and tool reference: see [INSTRUCTIONS.md](./INSTRUCTIONS.md).
 
-## MCP tools (16)
+### MCP tools (19)
 
-| | | |
-|---|---|---|
-| `remember` | `forget` | `update` |
-| `get_memory` | `search` | `list` |
-| `recall_for_context` | | |
-| `list_projects` | `get_project` | `create_project` |
-| `delete_project` | | |
-| `ingest_project` | | |
-| `consolidate` | `stats` | `recent_activity` |
-| `register_agent` | | |
+| | | | |
+|---|---|---|---|
+| `remember` | `forget` | `update` | `get_memory` |
+| `search` | `list` | `list_tags` | `recall_for_context` |
+| `list_projects` | `get_project` | `create_project` | `delete_project` |
+| `ingest_project` | `consolidate` | `consolidate_status` | |
+| `stats` | `bootstrap` | `recent_activity` | `register_agent` |
 
-## Tech stack
+---
+
+## What's in the box
+
+### Graph view (3k+ nodes, instant)
+
+Canvas-rendered with viewport culling. The Barnes–Hut force layout runs **off the main thread in a Web Worker** — you see the file-circle seed in < 5ms, then the worker refines. Filter switches cancel stale requests.
+
+### Light + dark theme
+
+All colors flow through CSS custom properties. `:root` (dark) and `:root.light` (warm off-white "paper"). RGB-triplet vars keep every `bg-accent/40` working. Persists to `localStorage`.
+
+### Confirmation modal
+
+`useConfirm()` returns a promise. Focus-trapped, Escape + backdrop cancel, danger/neutral tone. Resolver lives module-local so confirm state changes don't re-render unrelated subscribers. Wired on every destructive action.
+
+### Right-click context menu
+
+`useContextMenu().show(x, y, items)` pops a viewport-clamped menu. Keyboard nav (up/down/Enter). Different item sets per kind — graph nodes, project rows, memory cards each get their own actions.
+
+### MCP smoke test
+
+`pnpm mcp:test` spawns the real binary, discovers every tool via `tools/list`, calls each with sane args, and prints a colored PASS/FAIL table. Catches schema and dispatch bugs before they hit your agent.
+
+---
+
+## Stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Shell | Tauri 2 | Smaller binaries, native, webview UI, IPC via `invoke` |
+| Shell | Tauri 2 | Smaller binaries than Electron, native, webview UI, IPC via `invoke` |
 | Frontend | React 18 + Vite + Tailwind 3 | Fast, mature, ergonomic |
 | State | Zustand | Tiny, no boilerplate |
 | Icons | lucide-react | Clean, consistent, tree-shakeable |
 | Backend | Rust (1.77+) | Cold start < 50ms, single binary, no Python env |
 | DB | SQLite + r2d2 + rusqlite | Local, WAL, zero-config |
-| Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression, beats FAISS, MIT |
-| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal/CPU, ~30MB model |
+| Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
+| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal/CPU, ~30 MB model |
 | MCP | rmcp 1.7 (official Rust SDK) | First-class stdio, macros, server handler |
-| Tree-sitter | 0.25 + lang crates (rust/ts/js/py/go) | Per-function chunks, structural code search |
+| Tree-sitter | 0.25 + lang crates | rust / ts / js / py / go, per-function chunks, structural code search |
+
+---
 
 ## Roadmap
 
-- [ ] Watch-folder ingest (auto-reindex on file change)
-- [ ] Cross-encoder re-ranker for top-k (optional, pluggable)
-- [ ] Encrypted-at-rest mode (project-level key)
-- [ ] Multi-device sync (CRDTs over the same on-disk format)
-- [ ] Built-in chat view that calls an LLM with recalled context (optional, off by default)
-- [ ] Web export of memories for sharing
-- [ ] Memory diffing between projects
+### Shipped
+
+- [x] Per-project turbovec IdMapIndex with hybrid allowlist filters
+- [x] Tree-sitter indexed code (5 languages)
+- [x] MCP stdio server with 19 tools
+- [x] Web-viewer + graph view (canvas, Barnes–Hut in worker)
+- [x] Dark + light theme, persistent
+- [x] Confirmation modal + context menu primitives
+- [x] MCP smoke test (`pnpm mcp:test`)
+
+### Next up
+
+- [ ] **Watch-folder ingest** — auto-reindex on file change
+- [ ] **Cross-encoder re-ranker** for top-k (optional, pluggable)
+- [ ] **Encrypted-at-rest** mode (project-level key)
+- [ ] **Multi-device sync** (CRDTs over the same on-disk format)
+- [ ] **Built-in chat view** that calls an LLM with recalled context (opt-in)
+- [ ] **Web export** of memories for sharing
+- [ ] **Memory diffing** between projects
+- [ ] **GitHub Actions CI** — run smoke test on every PR
+- [ ] **Homebrew tap** — `brew install biturbo`
+
+---
+
+## Project structure
+
+```
+biTurbo/
+├── src/                          React + Vite + Tailwind frontend
+│   ├── views/                    Overview · Memories · Projects · Graph · Agents · Settings
+│   │   └── layoutWorker.ts       Barnes-Hut layout in a Web Worker
+│   ├── components/               Sidebar · TopBar · MemoryCard · MemoryDetail · QuickAdd
+│   │                             · Heatmap · Toast · ConfirmModal · ContextMenu
+│   └── lib/                      api.ts (Tauri invoke) · store.ts (zustand) · types.ts · format.ts
+├── scripts/
+│   └── mcp-smoke-test.ts         19-tool MCP smoke test runner
+├── src-tauri/                    Rust backend
+│   ├── src/
+│   │   ├── main.rs               Tauri entry
+│   │   ├── lib.rs                Tauri builder + IPC registration
+│   │   ├── state.rs              AppState (parking_lot::RwLock)
+│   │   ├── db.rs                 SQLite + r2d2 pool + schema
+│   │   ├── index_engine.rs       turbovec IdMapIndex wrapper (1 file per project)
+│   │   ├── embed.rs              fastembed (BGE-small-en default)
+│   │   ├── memory.rs             CRUD + search + types
+│   │   ├── project.rs            multi-project isolation
+│   │   ├── ingest.rs             tree-sitter project walker
+│   │   ├── consolidate.rs        decay / dedup / merge
+│   │   ├── mcp.rs                rmcp stdio server (19 tools)
+│   │   ├── scheduler.rs          background consolidate scheduler
+│   │   └── commands.rs           Tauri IPC handlers
+│   └── bin/biturbo_mcp.rs        Standalone MCP server binary
+├── INSTRUCTIONS.md               Rules for AI agents using the MCP tools — read this!
+├── README.md                     You are here.
+└── pnpm-workspace.yaml           esbuild allowBuilds (pnpm 11 strict)
+```
+
+---
 
 ## License
 
