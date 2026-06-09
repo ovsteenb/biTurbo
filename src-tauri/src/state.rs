@@ -92,9 +92,7 @@ impl AppState {
     /// (Re-)scan projects table and ensure an in-memory index exists for each.
     pub fn refresh_indices(&self) -> BiResult<()> {
         let conn = self.db.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, dim, bit_width FROM projects",
-        )?;
+        let mut stmt = conn.prepare("SELECT id, dim, bit_width FROM projects")?;
         let rows: Vec<(String, usize, u8)> = stmt
             .query_map([], |r| {
                 Ok((
@@ -150,15 +148,15 @@ impl AppState {
             Some((d, b)) => (d as usize, b as u8 as usize),
             None => return Err(BiError::NotFound(format!("project {project_id}"))),
         };
-        let idx = Arc::new(
-            ProjectIndex::open_or_create(
-                project_id,
-                dim,
-                bw,
-                &self.data_dir.join("indices"),
-            )?,
-        );
-        self.indices.write().insert(project_id.to_string(), idx.clone());
+        let idx = Arc::new(ProjectIndex::open_or_create(
+            project_id,
+            dim,
+            bw,
+            &self.data_dir.join("indices"),
+        )?);
+        self.indices
+            .write()
+            .insert(project_id.to_string(), idx.clone());
         Ok(idx)
     }
 
@@ -181,12 +179,7 @@ impl AppState {
     }
 
     /// Embed text and add to a project's index. Returns the vector length.
-    pub fn embed_and_add(
-        &self,
-        project_id: &str,
-        uid: &str,
-        text: &str,
-    ) -> BiResult<usize> {
+    pub fn embed_and_add(&self, project_id: &str, uid: &str, text: &str) -> BiResult<usize> {
         let vec = self.embedder.embed(text)?;
         let idx = self.get_or_load_index(project_id)?;
         idx.add(uid, &vec)?;

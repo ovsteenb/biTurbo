@@ -1,16 +1,16 @@
 use crate::db::{self, log_activity};
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
+use ignore::WalkBuilder;
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use streaming_iterator::StreamingIterator;
 use tauri::Emitter;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
-use streaming_iterator::StreamingIterator;
-use ignore::WalkBuilder;
 
 const CHUNK_INSERT_BATCH: usize = 64;
 const PROGRESS_EVERY: usize = 16;
@@ -113,7 +113,10 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     let mut by_basename: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for f in &files {
         if let Some(stem) = f.file_stem().and_then(|s| s.to_str()) {
-            by_basename.entry(stem.to_string()).or_default().push(f.clone());
+            by_basename
+                .entry(stem.to_string())
+                .or_default()
+                .push(f.clone());
         }
     }
 
@@ -123,7 +126,11 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         root.file_name().and_then(|s| s.to_str()).unwrap_or("root"),
         structure
     );
-    state.embed_and_add(project_id, &format!("{project_id}::structure"), &summary_text)?;
+    state.embed_and_add(
+        project_id,
+        &format!("{project_id}::structure"),
+        &summary_text,
+    )?;
     {
         let conn = state.db.conn()?;
         db::log_activity(
@@ -209,8 +216,19 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     }
 
     // ---- BATCHED: embed all chunks in one call (fastembed handles batching internally) ----
-    emit_progress(state, project_id, "embedding", total, total, None, result.chunks_indexed);
-    let embed_texts: Vec<&str> = pending_chunks.iter().map(|c| c.content_for_embed.as_str()).collect();
+    emit_progress(
+        state,
+        project_id,
+        "embedding",
+        total,
+        total,
+        None,
+        result.chunks_indexed,
+    );
+    let embed_texts: Vec<&str> = pending_chunks
+        .iter()
+        .map(|c| c.content_for_embed.as_str())
+        .collect();
     let embeddings = state.embedder.embed_batch(&embed_texts)?;
 
     // ---- Vector index: one batched add under a single lock acquisition ----
@@ -228,7 +246,15 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
 
     // ---- SQLite: all chunk inserts in ONE transaction (multi-row statements
     // of CHUNK_INSERT_BATCH rows to stay under the bind-variable limit) ----
-    emit_progress(state, project_id, "writing", total, total, None, result.chunks_indexed);
+    emit_progress(
+        state,
+        project_id,
+        "writing",
+        total,
+        total,
+        None,
+        result.chunks_indexed,
+    );
     state.db.write(|tx| {
         let now = chrono::Utc::now().timestamp_millis();
         for batch in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
@@ -267,7 +293,15 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
 
     // ---- SQLite: all edges in ONE transaction, batched the same way ----
     if !pending_edges.is_empty() {
-        emit_progress(state, project_id, "edges", total, total, None, result.chunks_indexed);
+        emit_progress(
+            state,
+            project_id,
+            "edges",
+            total,
+            total,
+            None,
+            result.chunks_indexed,
+        );
         let now = chrono::Utc::now().timestamp_millis();
         state.db.write(|tx| {
             for batch in pending_edges.chunks(512) {
@@ -329,7 +363,14 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
          WHERE project_id = ?1 AND mem_type = 'code'
          ORDER BY file_path, start_line",
     )?;
-    type ChunkRow = (String, String, Option<String>, Option<i64>, Option<i64>, Option<String>);
+    type ChunkRow = (
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    );
     let chunks: Vec<ChunkRow> = stmt
         .query_map(rusqlite::params![project_id], |r| {
             Ok((
@@ -354,7 +395,11 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
 
     for (file_path, members) in &by_file {
         let file_uid = format!("{project_id}::file::{}", file_path.trim_start_matches('/'));
-        let short = file_path.rsplit('/').next().unwrap_or(file_path).to_string();
+        let short = file_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(file_path)
+            .to_string();
         nodes.push(GraphNode {
             uid: file_uid.clone(),
             label: short,
@@ -404,14 +449,20 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
         edges.push(r?);
     }
 
-    Ok(GraphData { project_id: project_id.to_string(), nodes, edges })
+    Ok(GraphData {
+        project_id: project_id.to_string(),
+        nodes,
+        edges,
+    })
 }
 
 fn derive_label(content: &str) -> String {
     content
         .lines()
         .map(|l| l.trim())
-        .find(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("#") && !l.starts_with("/*"))
+        .find(|l| {
+            !l.is_empty() && !l.starts_with("//") && !l.starts_with("#") && !l.starts_with("/*")
+        })
         .map(|l| l.chars().take(60).collect())
         .unwrap_or_else(|| "(anon)".into())
 }
@@ -471,24 +522,48 @@ struct LangBundle {
 
 static LANG_BUNDLES: Lazy<HashMap<&'static str, LangBundle>> = Lazy::new(|| {
     let langs = [
-        "rust", "typescript", "javascript", "python", "go", "swift", "php", "ruby",
-        "java", "c", "cpp", "csharp", "bash", "html", "css",
+        "rust",
+        "typescript",
+        "javascript",
+        "python",
+        "go",
+        "swift",
+        "php",
+        "ruby",
+        "java",
+        "c",
+        "cpp",
+        "csharp",
+        "bash",
+        "html",
+        "css",
     ];
     let mut map = HashMap::new();
     for name in langs {
-        let Ok(language) = language_for(name) else { continue };
-        let chunk_query = chunk_query_src(name)
-            .and_then(|src| Query::new(&language, src).ok());
-        let import_query = import_query_src(name)
-            .and_then(|src| Query::new(&language, src).ok());
-        map.insert(name, LangBundle { language, chunk_query, import_query });
+        let Ok(language) = language_for(name) else {
+            continue;
+        };
+        let chunk_query = chunk_query_src(name).and_then(|src| Query::new(&language, src).ok());
+        let import_query = import_query_src(name).and_then(|src| Query::new(&language, src).ok());
+        map.insert(
+            name,
+            LangBundle {
+                language,
+                chunk_query,
+                import_query,
+            },
+        );
     }
     map
 });
 
 /// Read, parse (once), and chunk a single file. Runs on a rayon worker.
 fn parse_one_file(project_id: &str, root: &Path, path: &Path) -> ParsedFile {
-    let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
     let file_uid = format!("{project_id}::file::{rel}");
     let lang = detect_language(path).unwrap_or("");
     let mut pf = ParsedFile {
@@ -560,83 +635,111 @@ struct Chunk {
 
 fn chunk_query_src(lang: &str) -> Option<&'static str> {
     let query_src = match lang {
-        "rust" => r#"
+        "rust" => {
+            r#"
             (function_item name: (identifier) @name) @def
             (struct_item name: (type_identifier) @name) @def
             (enum_item name: (type_identifier) @name) @def
             (trait_item name: (type_identifier) @name) @def
             (impl_item type: (type_identifier) @name) @def
-        "#,
-        "javascript" => r#"
+        "#
+        }
+        "javascript" => {
+            r#"
             (function_declaration name: (identifier) @name) @def
             (class_declaration name: (identifier) @name) @def
             (method_definition name: (property_identifier) @name) @def
             (export_statement declaration: (function_declaration name: (identifier) @name)) @def
-        "#,
-        "typescript" => r#"
+        "#
+        }
+        "typescript" => {
+            r#"
             (function_declaration name: (identifier) @name) @def
             (class_declaration name: (type_identifier) @name) @def
             (method_definition name: (property_identifier) @name) @def
             (interface_declaration name: (type_identifier) @name) @def
             (type_alias_declaration name: (type_identifier) @name) @def
             (export_statement declaration: (function_declaration name: (identifier) @name)) @def
-        "#,
-        "python" => r#"
+        "#
+        }
+        "python" => {
+            r#"
             (function_definition name: (identifier) @name) @def
             (class_definition name: (identifier) @name) @def
-        "#,
-        "go" => r#"
+        "#
+        }
+        "go" => {
+            r#"
             (function_declaration name: (identifier) @name) @def
             (method_declaration name: (field_identifier) @name) @def
             (type_declaration (type_spec name: (type_identifier) @name)) @def
-        "#,
-        "swift" => r#"
+        "#
+        }
+        "swift" => {
+            r#"
             (function_declaration) @def
             (class_declaration) @def
             (protocol_declaration) @def
-        "#,
-        "php" => r#"
+        "#
+        }
+        "php" => {
+            r#"
             (function_definition) @def
             (class_declaration) @def
             (interface_declaration) @def
             (trait_declaration) @def
             (method_declaration) @def
-        "#,
-        "ruby" => r#"
+        "#
+        }
+        "ruby" => {
+            r#"
             (method) @def
             (class) @def
             (module) @def
-        "#,
-        "java" => r#"
+        "#
+        }
+        "java" => {
+            r#"
             (method_declaration) @def
             (class_declaration) @def
             (interface_declaration) @def
             (enum_declaration) @def
-        "#,
-        "c" => r#"
+        "#
+        }
+        "c" => {
+            r#"
             (function_definition) @def
             (struct_specifier) @def
             (union_specifier) @def
             (enum_specifier) @def
-        "#,
-        "cpp" => r#"
+        "#
+        }
+        "cpp" => {
+            r#"
             (function_definition) @def
             (class_specifier) @def
             (struct_specifier) @def
             (namespace_definition) @def
-        "#,
-        "csharp" => r#"
+        "#
+        }
+        "csharp" => {
+            r#"
             (method_declaration) @def
             (class_declaration) @def
             (interface_declaration) @def
             (struct_declaration) @def
-        "#,
-        "bash" => r#"
+        "#
+        }
+        "bash" => {
+            r#"
             (function_definition) @def
-        "#,
-        "css" => r#"
+        "#
+        }
+        "css" => {
+            r#"
             (rule_set) @def
-        "#,
+        "#
+        }
         _ => return None,
     };
     Some(query_src)
@@ -658,18 +761,38 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
                 let node = cap.node;
                 if !matches!(
                     node.kind(),
-                    "function_item" | "struct_item" | "enum_item" | "trait_item" | "impl_item"
-                    | "function_declaration" | "class_declaration" | "method_definition"
-                    | "interface_declaration" | "type_alias_declaration" | "export_statement"
-                    | "function_definition" | "class_definition" | "method_declaration" | "type_declaration"
+                    "function_item"
+                        | "struct_item"
+                        | "enum_item"
+                        | "trait_item"
+                        | "impl_item"
+                        | "function_declaration"
+                        | "class_declaration"
+                        | "method_definition"
+                        | "interface_declaration"
+                        | "type_alias_declaration"
+                        | "export_statement"
+                        | "function_definition"
+                        | "class_definition"
+                        | "method_declaration"
+                        | "type_declaration"
                 ) {
                     continue;
                 }
                 let start = node.start_position().row;
-                let end = node.end_position().row.min(start + 200).min(lines.len() - 1);
+                let end = node
+                    .end_position()
+                    .row
+                    .min(start + 200)
+                    .min(lines.len() - 1);
                 let code = lines[start..=end].join("\n");
                 let kind = node.kind().replace('_', " ");
-                chunks.push(Chunk { kind, code, start_line: start + 1, end_line: end + 1 });
+                chunks.push(Chunk {
+                    kind,
+                    code,
+                    start_line: start + 1,
+                    end_line: end + 1,
+                });
             }
         }
     }
@@ -689,41 +812,61 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
 
 fn import_query_src(lang: &str) -> Option<&'static str> {
     let query_src = match lang {
-        "rust" => r#"
+        "rust" => {
+            r#"
             (use_declaration argument: (_) @imp)
             (mod_item name: (identifier) @imp)
             (extern_crate_declaration name: (identifier) @imp)
-        "#,
-        "javascript" | "typescript" => r#"
+        "#
+        }
+        "javascript" | "typescript" => {
+            r#"
             (import_statement source: (string) @imp)
             (export_statement source: (string) @imp)
             (call_expression function: (identifier) @fn arguments: (arguments (string) @imp))
-        "#,
-        "python" => r#"
+        "#
+        }
+        "python" => {
+            r#"
             (import_statement name: (dotted_name) @imp)
             (import_from_statement module_name: (dotted_name) @imp)
-        "#,
-        "go" => r#"
+        "#
+        }
+        "go" => {
+            r#"
             (import_spec path: (interpreted_string_literal) @imp)
-        "#,
-        "swift" => r#"
+        "#
+        }
+        "swift" => {
+            r#"
             (import_declaration) @imp
-        "#,
-        "php" => r#"
+        "#
+        }
+        "php" => {
+            r#"
             (namespace_use_declaration) @imp
-        "#,
-        "java" => r#"
+        "#
+        }
+        "java" => {
+            r#"
             (import_declaration) @imp
-        "#,
-        "c" | "cpp" => r#"
+        "#
+        }
+        "c" | "cpp" => {
+            r#"
             (preproc_include) @imp
-        "#,
-        "csharp" => r#"
+        "#
+        }
+        "csharp" => {
+            r#"
             (using_directive) @imp
-        "#,
-        "css" => r#"
+        "#
+        }
+        "css" => {
+            r#"
             (import_statement) @imp
-        "#,
+        "#
+        }
         _ => return None,
     };
     Some(query_src)
@@ -731,7 +874,9 @@ fn import_query_src(lang: &str) -> Option<&'static str> {
 
 /// Walk import-query matches over an already-parsed tree.
 fn collect_imports(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str) -> Vec<String> {
-    let Some(query) = &bundle.import_query else { return Vec::new() };
+    let Some(query) = &bundle.import_query else {
+        return Vec::new();
+    };
     let mut cursor = QueryCursor::new();
     let mut imports = Vec::new();
     let mut matches = cursor.matches(query, root, source.as_bytes());
@@ -741,10 +886,17 @@ fn collect_imports(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &st
             if node.kind() == "string" || node.kind() == "interpreted_string_literal" {
                 let raw = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 let cleaned = raw.trim_matches(|c| c == '"' || c == '\'').to_string();
-                if !cleaned.is_empty() { imports.push(cleaned); }
-            } else if matches!(node.kind(), "identifier" | "dotted_name" | "scoped_identifier") {
+                if !cleaned.is_empty() {
+                    imports.push(cleaned);
+                }
+            } else if matches!(
+                node.kind(),
+                "identifier" | "dotted_name" | "scoped_identifier"
+            ) {
                 let txt = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                if !txt.is_empty() { imports.push(txt); }
+                if !txt.is_empty() {
+                    imports.push(txt);
+                }
             }
         }
     }
@@ -783,7 +935,11 @@ fn resolve_import(
     let first = first.split('.').next().unwrap_or(first);
     if let Some(matches) = by_basename.get(first) {
         if let Some(first_match) = matches.first() {
-            let rel = first_match.strip_prefix(root).ok()?.to_string_lossy().to_string();
+            let rel = first_match
+                .strip_prefix(root)
+                .ok()?
+                .to_string_lossy()
+                .to_string();
             return Some(rel);
         }
     }
@@ -818,10 +974,16 @@ fn build_structure_summary(root: &Path) -> BiResult<String> {
     {
         let p = entry.path();
         let rel = p.strip_prefix(root).unwrap_or(p);
-        if rel.components().count() == 0 { continue; }
+        if rel.components().count() == 0 {
+            continue;
+        }
         let depth = rel.components().count();
         let indent = "  ".repeat(depth - 1);
-        let name = rel.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let name = rel
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
         if p.is_dir() {
             lines.push(format!("{indent}{name}/"));
         } else {
@@ -864,7 +1026,9 @@ fn emit_progress(
 }
 
 #[allow(dead_code)]
-fn _unused_hashset() -> HashSet<()> { HashSet::new() }
+fn _unused_hashset() -> HashSet<()> {
+    HashSet::new()
+}
 
 #[cfg(test)]
 mod tests {
@@ -872,7 +1036,8 @@ mod tests {
 
     #[test]
     fn parse_one_file_extracts_chunks_and_imports() {
-        let dir = std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.rs");
         std::fs::write(
@@ -897,10 +1062,29 @@ mod tests {
 
     #[test]
     fn lang_bundles_compile_for_all_languages() {
-        for lang in ["rust", "typescript", "javascript", "python", "go", "swift",
-                     "php", "ruby", "java", "c", "cpp", "csharp", "bash", "css"] {
-            let bundle = LANG_BUNDLES.get(lang).unwrap_or_else(|| panic!("no bundle for {lang}"));
-            assert!(bundle.chunk_query.is_some(), "chunk query failed to compile for {lang}");
+        for lang in [
+            "rust",
+            "typescript",
+            "javascript",
+            "python",
+            "go",
+            "swift",
+            "php",
+            "ruby",
+            "java",
+            "c",
+            "cpp",
+            "csharp",
+            "bash",
+            "css",
+        ] {
+            let bundle = LANG_BUNDLES
+                .get(lang)
+                .unwrap_or_else(|| panic!("no bundle for {lang}"));
+            assert!(
+                bundle.chunk_query.is_some(),
+                "chunk query failed to compile for {lang}"
+            );
         }
     }
 }

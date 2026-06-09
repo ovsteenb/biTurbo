@@ -14,7 +14,10 @@ mod tests {
     }
 
     fn wait_for_index_flush(state: &AppState, project_id: &str, timeout: Duration) -> bool {
-        let tvim = state.data_dir.join("indices").join(format!("{project_id}.tvim"));
+        let tvim = state
+            .data_dir
+            .join("indices")
+            .join(format!("{project_id}.tvim"));
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if tvim.exists() {
@@ -63,7 +66,9 @@ mod tests {
 
         let indices_dir = data_dir.join("indices");
         assert!(indices_dir.join(format!("{project_id}.tvim")).exists());
-        assert!(indices_dir.join(format!("{project_id}.uidmap.json")).exists());
+        assert!(indices_dir
+            .join(format!("{project_id}.uidmap.json"))
+            .exists());
         assert!(
             !indices_dir.read_dir().unwrap().any(|e| {
                 e.ok()
@@ -87,8 +92,14 @@ mod tests {
         assert!(result.files_indexed > 0, "no files indexed");
         assert!(result.chunks_indexed > 0, "no chunks indexed");
 
-        let hits = memory::search(&state, project_id, "tree-sitter project indexing", 5, Some("code"))
-            .expect("search code");
+        let hits = memory::search(
+            &state,
+            project_id,
+            "tree-sitter project indexing",
+            5,
+            Some("code"),
+        )
+        .expect("search code");
         assert!(!hits.is_empty(), "ingested code not searchable");
 
         assert!(
@@ -113,7 +124,11 @@ mod tests {
                 },
             )
             .expect("remember");
-            assert!(wait_for_index_flush(&state, &state.default_project_id, Duration::from_secs(3)));
+            assert!(wait_for_index_flush(
+                &state,
+                &state.default_project_id,
+                Duration::from_secs(3)
+            ));
             mem.uid
         };
 

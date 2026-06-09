@@ -32,13 +32,14 @@ pub mod project;
 pub mod scheduler;
 pub mod smoke;
 pub mod state;
+pub mod tray;
 
 pub use error::{BiError, BiResult};
 pub use state::AppState;
 
+use std::sync::Arc;
 use tauri::Manager;
 use tracing::info;
-use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -54,14 +55,14 @@ pub fn run() {
     info!("biTurbo starting…");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("app data dir resolvable");
+            tray::setup(app)?;
+
+            let data_dir = app.path().app_data_dir().expect("app data dir resolvable");
             std::fs::create_dir_all(&data_dir).ok();
 
             let mut state = AppState::open(&data_dir).expect("open app state");
@@ -73,6 +74,7 @@ pub fn run() {
             info!("biTurbo ready @ {}", data_dir.display());
             Ok(())
         })
+        .on_window_event(|window, event| tray::on_window_event(window, event))
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::list_memories,

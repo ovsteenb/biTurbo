@@ -23,9 +23,13 @@ pub async fn run_mcp_server_stdio() -> anyhow::Result<()> {
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         let response = match serde_json::from_str::<JsonRpcRequest>(trimmed) {
             Ok(req) => dispatch(&state, req).await,
             Err(e) => json!({
@@ -55,12 +59,15 @@ struct JsonRpcRequest {
 async fn dispatch(state: &Arc<AppState>, req: JsonRpcRequest) -> Value {
     let id = req.id.clone().unwrap_or(Value::Null);
     match req.method.as_str() {
-        "initialize" => ok(&id, json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": "biTurbo", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": "## biTurbo Memory Layer — Instructions\n\nYou have access to biTurbo, a persistent semantic memory layer via MCP.\n\n## Core loop (MANDATORY — follow this every turn):\n1. **RECALL** — call `recall_for_context(query=<user msg>, project_id=<current>, k=8)`.\n2. **ANSWER** — respond using recalled context.\n3. **REMEMBER** — call `remember()` after every response to store durable information.\n\n## When to `remember` (call **after every response**):\n- ✅ User states a fact about themselves/environment/project → `fact`\n- ✅ You make a decision with rationale → `decision`\n- ✅ User expresses a preference (style, verbosity, tools) → `preference`\n- ✅ User corrects you → `fact` with `supersedes`\n- ✅ You discover a codebase pattern → `pattern`\n- ✅ Something noteworthy happened → `episode`\n- ✅ Meta-observation about user or work → `reflection`\n- ❌ Transient state — don't remember\n- ❌ Public knowledge any LLM knows — don't remember\n- ❌ Secrets, tokens, PII — **NEVER**\n\nIf unsure: \"Would future-me in 6 months want to know this?\" If yes, remember.\n\n## Memory types:\n- `fact` — verifiable facts\n- `decision` — choices + why\n- `preference` — how user wants things\n- `pattern` — repeatable approaches\n- `episode` — past events (include timestamp)\n- `reflection` — meta-observations\n- `code` — set by ingest_project only\n\n## Importance (0-1):\n- 0.8-1.0: cross-project rules, key decisions\n- 0.5-0.7: typical (default 0.6)\n- 0.2-0.4: specific/stale details\n\n## Tags: 1-3 per memory. Good: `auth`, `ui`, `db`, `convention`, `api`. Bad: `important`, `todo`.\n\n## Session lifecycle:\n- START → `register_agent(name, kind)`, `list_projects()`\n- EVERY TURN → recall → answer → remember\n- END → `consolidate(project_id)`, final `remember`\n\n## Multi-project:\n- Always pass `project_id`. Isolated per project.\n- `project_id=\"default\"` for cross-cutting facts.\n\n## Anti-patterns:\n- Don't dump 10k memories — use recall_for_context k=5-10\n- Don't skip recall — amnesia is worse than no tool\n- Don't remember the obvious (Cargo, Git, syntax)\n- Don't forget prematurely — knowledge dies\n- Never cross-project leak — right project_id always\n- Never store secrets, tokens, PII\n\n## Tools (19):\nremember, forget, update, get_memory, search, list, list_tags,\nrecall_for_context, list_projects, get_project, create_project,\ndelete_project, ingest_project, consolidate, consolidate_status,\nstats, bootstrap, recent_activity, register_agent"
-        })),
+        "initialize" => ok(
+            &id,
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "biTurbo", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": "## biTurbo Memory Layer — Instructions\n\nYou have access to biTurbo, a persistent semantic memory layer via MCP.\n\n## Core loop (MANDATORY — follow this every turn):\n1. **RECALL** — call `recall_for_context(query=<user msg>, project_id=<current>, k=8)`.\n2. **ANSWER** — respond using recalled context.\n3. **REMEMBER** — call `remember()` after every response to store durable information.\n\n## When to `remember` (call **after every response**):\n- ✅ User states a fact about themselves/environment/project → `fact`\n- ✅ You make a decision with rationale → `decision`\n- ✅ User expresses a preference (style, verbosity, tools) → `preference`\n- ✅ User corrects you → `fact` with `supersedes`\n- ✅ You discover a codebase pattern → `pattern`\n- ✅ Something noteworthy happened → `episode`\n- ✅ Meta-observation about user or work → `reflection`\n- ❌ Transient state — don't remember\n- ❌ Public knowledge any LLM knows — don't remember\n- ❌ Secrets, tokens, PII — **NEVER**\n\nIf unsure: \"Would future-me in 6 months want to know this?\" If yes, remember.\n\n## Memory types:\n- `fact` — verifiable facts\n- `decision` — choices + why\n- `preference` — how user wants things\n- `pattern` — repeatable approaches\n- `episode` — past events (include timestamp)\n- `reflection` — meta-observations\n- `code` — set by ingest_project only\n\n## Importance (0-1):\n- 0.8-1.0: cross-project rules, key decisions\n- 0.5-0.7: typical (default 0.6)\n- 0.2-0.4: specific/stale details\n\n## Tags: 1-3 per memory. Good: `auth`, `ui`, `db`, `convention`, `api`. Bad: `important`, `todo`.\n\n## Session lifecycle:\n- START → `register_agent(name, kind)`, `list_projects()`\n- EVERY TURN → recall → answer → remember\n- END → `consolidate(project_id)`, final `remember`\n\n## Multi-project:\n- Always pass `project_id`. Isolated per project.\n- `project_id=\"default\"` for cross-cutting facts.\n\n## Anti-patterns:\n- Don't dump 10k memories — use recall_for_context k=5-10\n- Don't skip recall — amnesia is worse than no tool\n- Don't remember the obvious (Cargo, Git, syntax)\n- Don't forget prematurely — knowledge dies\n- Never cross-project leak — right project_id always\n- Never store secrets, tokens, PII\n\n## Tools (19):\nremember, forget, update, get_memory, search, list, list_tags,\nrecall_for_context, list_projects, get_project, create_project,\ndelete_project, ingest_project, consolidate, consolidate_status,\nstats, bootstrap, recent_activity, register_agent"
+            }),
+        ),
         "notifications/initialized" => json!({}),
         "tools/list" => ok(&id, json!({ "tools": tool_schemas() })),
         "tools/call" => {
@@ -69,10 +76,13 @@ async fn dispatch(state: &Arc<AppState>, req: JsonRpcRequest) -> Value {
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             match call_tool(state, name, args).await {
                 Ok(content) => ok(&id, json!({ "content": content, "isError": false })),
-                Err(e) => ok(&id, json!({
-                    "content": [{ "type": "text", "text": format!("error: {e}") }],
-                    "isError": true
-                })),
+                Err(e) => ok(
+                    &id,
+                    json!({
+                        "content": [{ "type": "text", "text": format!("error: {e}") }],
+                        "isError": true
+                    }),
+                ),
             }
         }
         "ping" => ok(&id, json!({})),
@@ -131,11 +141,15 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             text(&serde_json::to_string_pretty(&m)?)
         }
         "search" => {
-            let project_id = args.get("project_id").and_then(|v| v.as_str()).unwrap_or("");
+            let project_id = args
+                .get("project_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let query = arg_str(&args, "query")?;
             let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
-            let hits: Vec<MemoryWithScore> = memory::search(state, project_id, &query, k, mem_type)?;
+            let hits: Vec<MemoryWithScore> =
+                memory::search(state, project_id, &query, k, mem_type)?;
             text(&serde_json::to_string_pretty(&hits)?)
         }
         "list" => {
@@ -152,7 +166,10 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             text(&serde_json::to_string_pretty(&t)?)
         }
         "recall_for_context" => {
-            let project_id = args.get("project_id").and_then(|v| v.as_str()).unwrap_or("");
+            let project_id = args
+                .get("project_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let query = arg_str(&args, "query")?;
             let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
@@ -170,9 +187,16 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             let input = CreateProjectInput {
                 id: args.get("id").and_then(|v| v.as_str().map(String::from)),
                 name,
-                description: args.get("description").and_then(|v| v.as_str().map(String::from)),
-                root_path: args.get("root_path").and_then(|v| v.as_str().map(String::from)),
-                bit_width: args.get("bit_width").and_then(|v| v.as_u64()).map(|n| n as u8),
+                description: args
+                    .get("description")
+                    .and_then(|v| v.as_str().map(String::from)),
+                root_path: args
+                    .get("root_path")
+                    .and_then(|v| v.as_str().map(String::from)),
+                bit_width: args
+                    .get("bit_width")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u8),
             };
             let p = project::create(state, input)?;
             text(&serde_json::to_string_pretty(&p)?)
@@ -224,7 +248,8 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                 require_project(p)?;
             }
             let output_path = arg_str(&args, "output_path")?;
-            let r = crate::io::export_memories(state, project_id, std::path::Path::new(&output_path))?;
+            let r =
+                crate::io::export_memories(state, project_id, std::path::Path::new(&output_path))?;
             text(&serde_json::to_string_pretty(&r)?)
         }
         "enable_watch" => {
@@ -256,38 +281,51 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         }
         "stats" => {
             let conn = state.db.conn()?;
-            let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-            let total_projects: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
+            let total_memories: i64 =
+                conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
+            let total_projects: i64 =
+                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
             let by_type = memory::count_by_type(state, None)?;
             let out = json!({ "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type });
             text(&serde_json::to_string_pretty(&out)?)
         }
         "bootstrap" => {
             let conn = state.db.conn()?;
-            let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-            let total_projects: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
+            let total_memories: i64 =
+                conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
+            let total_projects: i64 =
+                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
             let by_type = memory::count_by_type(state, None)?;
             let projects = project::list(state)?;
             let tags = memory::list_tags(state, None)?;
             let recent_limit = 25_i64;
             let mut s = conn.prepare("SELECT id, project_id, agent_id, action, memory_uid, created_at FROM activity ORDER BY created_at DESC LIMIT ?1")?;
-            let recent: Vec<Value> = s.query_map(rusqlite::params![recent_limit], |r| {
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "project_id": r.get::<_, Option<String>>(1)?,
-                    "agent_id": r.get::<_, Option<String>>(2)?,
-                    "action": r.get::<_, String>(3)?,
-                    "memory_uid": r.get::<_, Option<String>>(4)?,
-                    "created_at": r.get::<_, i64>(5)?,
-                }))
-            })?.filter_map(|r| r.ok()).collect();
-            let mut a = conn.prepare("SELECT id, name, kind, last_seen FROM agents ORDER BY last_seen DESC")?;
-            let agents: Vec<Value> = a.query_map([], |r| Ok(json!({
-                "id": r.get::<_, String>(0)?,
-                "name": r.get::<_, String>(1)?,
-                "kind": r.get::<_, String>(2)?,
-                "last_seen": r.get::<_, i64>(3)?,
-            })))?.filter_map(|r| r.ok()).collect();
+            let recent: Vec<Value> = s
+                .query_map(rusqlite::params![recent_limit], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "project_id": r.get::<_, Option<String>>(1)?,
+                        "agent_id": r.get::<_, Option<String>>(2)?,
+                        "action": r.get::<_, String>(3)?,
+                        "memory_uid": r.get::<_, Option<String>>(4)?,
+                        "created_at": r.get::<_, i64>(5)?,
+                    }))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            let mut a = conn
+                .prepare("SELECT id, name, kind, last_seen FROM agents ORDER BY last_seen DESC")?;
+            let agents: Vec<Value> = a
+                .query_map([], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, String>(0)?,
+                        "name": r.get::<_, String>(1)?,
+                        "kind": r.get::<_, String>(2)?,
+                        "last_seen": r.get::<_, i64>(3)?,
+                    }))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
             let out = json!({
                 "stats": { "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type },
                 "projects": projects,
@@ -302,19 +340,24 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as i64;
             let conn = state.db.conn()?;
             let mut s = conn.prepare("SELECT id, project_id, agent_id, action, memory_uid, detail, created_at FROM activity ORDER BY created_at DESC LIMIT ?1")?;
-            let rows: Vec<Value> = s.query_map(rusqlite::params![limit], |r| {
-                let detail_str: Option<String> = r.get(5)?;
-                let detail = detail_str.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok());
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "project_id": r.get::<_, Option<String>>(1)?,
-                    "agent_id": r.get::<_, Option<String>>(2)?,
-                    "action": r.get::<_, String>(3)?,
-                    "memory_uid": r.get::<_, Option<String>>(4)?,
-                    "detail": detail,
-                    "created_at": r.get::<_, i64>(6)?,
-                }))
-            })?.filter_map(|r| r.ok()).collect();
+            let rows: Vec<Value> = s
+                .query_map(rusqlite::params![limit], |r| {
+                    let detail_str: Option<String> = r.get(5)?;
+                    let detail = detail_str
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok());
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "project_id": r.get::<_, Option<String>>(1)?,
+                        "agent_id": r.get::<_, Option<String>>(2)?,
+                        "action": r.get::<_, String>(3)?,
+                        "memory_uid": r.get::<_, Option<String>>(4)?,
+                        "detail": detail,
+                        "created_at": r.get::<_, i64>(6)?,
+                    }))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
             drop(s);
             text(&serde_json::to_string_pretty(&rows)?)
         }
@@ -332,7 +375,9 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                 )?;
                 Ok(())
             })?;
-            text(&serde_json::to_string_pretty(&json!({ "id": id, "name": name, "kind": kind, "last_seen": now }))?)
+            text(&serde_json::to_string_pretty(
+                &json!({ "id": id, "name": name, "kind": kind, "last_seen": now }),
+            )?)
         }
         other => return Err(BiError::Invalid(format!("unknown tool: {other}"))),
     };
@@ -340,24 +385,45 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
 }
 
 fn arg_str(args: &Value, key: &str) -> BiResult<String> {
-    args.get(key).and_then(|v| v.as_str()).map(String::from)
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(String::from)
         .ok_or_else(|| BiError::Invalid(format!("missing string arg: {key}")))
 }
 
 fn format_context_block(hits: &[MemoryWithScore]) -> String {
-    if hits.is_empty() { return "<biTurboContext>no relevant memories</biTurboContext>".into(); }
+    if hits.is_empty() {
+        return "<biTurboContext>no relevant memories</biTurboContext>".into();
+    }
     let mut s = String::from("<biTurboContext>\n");
     for (i, h) in hits.iter().enumerate() {
-        s.push_str(&format!("[{}] ({} · score={:.3} · importance={:.2})\n{}\n\n",
-            i + 1, h.memory.mem_type, h.score, h.memory.importance, h.memory.content.trim()));
+        s.push_str(&format!(
+            "[{}] ({} · score={:.3} · importance={:.2})\n{}\n\n",
+            i + 1,
+            h.memory.mem_type,
+            h.score,
+            h.memory.importance,
+            h.memory.content.trim()
+        ));
     }
     s.push_str("</biTurboContext>");
     s
 }
 
 fn slugify(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
-        .collect::<String>().split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-")
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn tool_schemas() -> Value {

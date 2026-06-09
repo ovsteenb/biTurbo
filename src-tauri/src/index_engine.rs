@@ -50,10 +50,8 @@ impl ProjectIndex {
             let meta_path = meta_path_for(&file_path);
             let (u2e, e2u, n) = if meta_path.exists() {
                 let bytes = std::fs::read(&meta_path)?;
-                let map: HashMap<String, u64> =
-                    serde_json::from_slice(&bytes).unwrap_or_default();
-                let e2u: HashMap<u64, String> =
-                    map.iter().map(|(u, e)| (*e, u.clone())).collect();
+                let map: HashMap<String, u64> = serde_json::from_slice(&bytes).unwrap_or_default();
+                let e2u: HashMap<u64, String> = map.iter().map(|(u, e)| (*e, u.clone())).collect();
                 let n = map.values().copied().max().unwrap_or(0);
                 (map, e2u, n + 1)
             } else {
@@ -61,8 +59,8 @@ impl ProjectIndex {
             };
             (idx, u2e, e2u, n)
         } else {
-            let idx = IdMapIndex::new(dim, bit_width)
-                .map_err(|e| BiError::Index(format!("new: {e}")))?;
+            let idx =
+                IdMapIndex::new(dim, bit_width).map_err(|e| BiError::Index(format!("new: {e}")))?;
             (idx, HashMap::new(), HashMap::new(), 1)
         };
 
@@ -204,7 +202,9 @@ impl ProjectIndex {
         });
 
         let (scores, ids) = match allowlist_extids.as_ref() {
-            Some(v) => inner.index.search_with_allowlist(query, k, Some(v.as_slice())),
+            Some(v) => inner
+                .index
+                .search_with_allowlist(query, k, Some(v.as_slice())),
             None => inner.index.search(query, k),
         };
 
@@ -305,7 +305,8 @@ mod tests {
         assert_eq!(idx.len(), 51);
 
         // Re-adding an existing uid replaces, not duplicates.
-        idx.add_batch(&[("uid-0".to_string(), vec_for(0.0, dim))]).unwrap();
+        idx.add_batch(&[("uid-0".to_string(), vec_for(0.0, dim))])
+            .unwrap();
         assert_eq!(idx.len(), 51);
 
         // Search returns hits; bit_width=4 quantization makes exact NN

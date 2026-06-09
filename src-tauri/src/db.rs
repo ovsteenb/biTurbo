@@ -11,10 +11,10 @@
 use crate::error::BiResult;
 use parking_lot::Mutex;
 use r2d2::Pool;
-use std::sync::Arc;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
+use std::sync::Arc;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 

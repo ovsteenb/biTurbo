@@ -55,9 +55,7 @@ pub struct CreateProjectInput {
 }
 
 pub fn create(state: &AppState, input: CreateProjectInput) -> BiResult<Project> {
-    let id = input
-        .id
-        .unwrap_or_else(|| slugify(&input.name));
+    let id = input.id.unwrap_or_else(|| slugify(&input.name));
     let bit_width = input.bit_width.unwrap_or(4) as i64;
     let dim = state.embedder.dim as i64;
     let now = chrono::Utc::now().timestamp_millis();
@@ -89,15 +87,15 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
         return Err(BiError::Invalid("cannot delete default project".into()));
     }
     // Drop index file.
-    let file = state
-        .data_dir
-        .join("indices")
-        .join(format!("{id}.tvim"));
+    let file = state.data_dir.join("indices").join(format!("{id}.tvim"));
     let _ = std::fs::remove_file(&file);
     let meta = file.with_extension("uidmap.json");
     let _ = std::fs::remove_file(&meta);
     state.db.write(|tx| {
-        tx.execute("DELETE FROM memories WHERE project_id = ?1", rusqlite::params![id])?;
+        tx.execute(
+            "DELETE FROM memories WHERE project_id = ?1",
+            rusqlite::params![id],
+        )?;
         tx.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         log_activity(tx, Some(&id), None, "delete_project", None, None)?;
         Ok(())
@@ -125,7 +123,13 @@ fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
 
 fn slugify(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|p| !p.is_empty())

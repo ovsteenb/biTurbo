@@ -1,11 +1,11 @@
 //! Tauri IPC commands. The frontend calls these via `invoke<T>("name", { args })`.
 
 use crate::error::BiResult;
+use crate::ingest;
 use crate::memory::{self, Memory, MemoryWithScore, RememberInput, UpdateInput};
 use crate::project::{self, CreateProjectInput, Project};
 use crate::scheduler::ConsolidateStatus;
 use crate::state::AppState;
-use crate::ingest;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
@@ -129,10 +129,7 @@ pub fn get_project(state: State<'_, AppState>, id: String) -> BiResult<Project> 
 }
 
 #[tauri::command]
-pub fn create_project(
-    state: State<'_, AppState>,
-    input: CreateProjectInput,
-) -> BiResult<Project> {
+pub fn create_project(state: State<'_, AppState>, input: CreateProjectInput) -> BiResult<Project> {
     project::create(state.inner(), input)
 }
 
@@ -171,10 +168,7 @@ pub struct IngestError {
 }
 
 #[tauri::command]
-pub fn ingest_project(
-    state: State<'_, AppState>,
-    args: IngestArgs,
-) -> BiResult<IngestJobResponse> {
+pub fn ingest_project(state: State<'_, AppState>, args: IngestArgs) -> BiResult<IngestJobResponse> {
     project::get(state.inner(), &args.project_id).map_err(|_| {
         crate::error::BiError::Invalid(format!(
             "project '{}' does not exist — create it first",
@@ -259,7 +253,9 @@ pub fn consolidate_now(
 }
 
 #[tauri::command]
-pub fn consolidate_status(_state: State<'_, AppState>) -> BiResult<crate::scheduler::ConsolidateStatus> {
+pub fn consolidate_status(
+    _state: State<'_, AppState>,
+) -> BiResult<crate::scheduler::ConsolidateStatus> {
     Ok(crate::scheduler::get_status())
 }
 
@@ -316,29 +312,25 @@ pub struct WatchArgs {
 }
 
 #[tauri::command]
-pub fn set_watch(
-    state: State<'_, AppState>,
-    args: WatchArgs,
-) -> BiResult<crate::io::WatchStatus> {
+pub fn set_watch(state: State<'_, AppState>, args: WatchArgs) -> BiResult<crate::io::WatchStatus> {
     if args.enabled {
-        let root = if let Some(r) = args.root_path.as_ref() {
-            std::path::PathBuf::from(r)
-        } else {
-            let conn = state.db.conn()?;
-            let root: Option<String> = conn
-                .query_row(
-                    "SELECT root_path FROM projects WHERE id = ?1",
-                    rusqlite::params![&args.project_id],
-                    |r| r.get(0),
-                )
-                .ok()
-                .flatten();
-            std::path::PathBuf::from(
-                root.ok_or_else(|| {
+        let root =
+            if let Some(r) = args.root_path.as_ref() {
+                std::path::PathBuf::from(r)
+            } else {
+                let conn = state.db.conn()?;
+                let root: Option<String> = conn
+                    .query_row(
+                        "SELECT root_path FROM projects WHERE id = ?1",
+                        rusqlite::params![&args.project_id],
+                        |r| r.get(0),
+                    )
+                    .ok()
+                    .flatten();
+                std::path::PathBuf::from(root.ok_or_else(|| {
                     crate::error::BiError::Invalid("no root_path on project".into())
-                })?,
-            )
-        };
+                })?)
+            };
         crate::io::enable_watch(state.inner(), &args.project_id, &root)?;
     } else {
         crate::io::disable_watch(state.inner(), &args.project_id)?;
@@ -365,10 +357,8 @@ pub fn set_project_embed_model(state: State<'_, AppState>, args: SetModelArgs) -
 #[tauri::command]
 pub fn stats(state: State<'_, AppState>) -> BiResult<Stats> {
     let conn = state.db.conn()?;
-    let total_memories: i64 =
-        conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-    let total_projects: i64 =
-        conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
+    let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
+    let total_projects: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
     let total_agents: i64 = conn
         .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
         .unwrap_or(0);
@@ -509,10 +499,7 @@ pub struct RegisterAgentArgs {
 }
 
 #[tauri::command]
-pub fn register_agent(
-    state: State<'_, AppState>,
-    args: RegisterAgentArgs,
-) -> BiResult<AgentEntry> {
+pub fn register_agent(state: State<'_, AppState>, args: RegisterAgentArgs) -> BiResult<AgentEntry> {
     let now = chrono::Utc::now().timestamp_millis();
     let id = slugify(&args.name);
     let meta_str = args.meta.as_ref().map(|v| v.to_string());
@@ -566,7 +553,13 @@ pub fn recent_activity(
 
 fn slugify(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|p| !p.is_empty())

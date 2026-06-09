@@ -141,7 +141,8 @@ fn find_duplicates(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(
             continue;
         }
         // Build a uid→imp map and uid→Memory map for O(1) lookup during dedup.
-        let by_uid: std::collections::HashMap<&str, &Memory> = mems.iter().map(|m| (m.uid.as_str(), m)).collect();
+        let by_uid: std::collections::HashMap<&str, &Memory> =
+            mems.iter().map(|m| (m.uid.as_str(), m)).collect();
         // Embed every memory in one batched call (one ONNX session pass)
         // instead of one embed per memory, then run the cheap vector searches
         // against the precomputed embeddings.

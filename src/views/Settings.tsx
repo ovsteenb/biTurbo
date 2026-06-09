@@ -1,6 +1,18 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../lib/store";
-import { Terminal, Folder, Cpu, Copy, Check, FileCode2, Sun, Moon } from "lucide-react";
+import {
+  Terminal,
+  Folder,
+  Cpu,
+  Copy,
+  Check,
+  FileCode2,
+  Sun,
+  Moon,
+  Power,
+  AppWindow,
+} from "lucide-react";
+import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import clsx from "clsx";
 
 export function Settings() {
@@ -11,6 +23,16 @@ export function Settings() {
   const theme = useApp((s) => s.theme);
   const setTheme = useApp((s) => s.setTheme);
   const [copied, setCopied] = useState<string | null>(null);
+  const [launchOnBoot, setLaunchOnBoot] = useState(false);
+  const [bootLoading, setBootLoading] = useState(true);
+  const [bootSaving, setBootSaving] = useState(false);
+
+  useEffect(() => {
+    isEnabled()
+      .then(setLaunchOnBoot)
+      .catch(() => setLaunchOnBoot(false))
+      .finally(() => setBootLoading(false));
+  }, []);
 
   const project = projects.find((p) => p.id === currentProjectId);
 
@@ -107,6 +129,29 @@ Project-agnostic preferences and cross-project facts live here.
 ${end}`;
   }, []);
 
+  async function toggleLaunchOnBoot() {
+    if (bootLoading || bootSaving) return;
+    setBootSaving(true);
+    try {
+      if (launchOnBoot) {
+        await disable();
+        setLaunchOnBoot(false);
+        showToast({ kind: "ok", text: "Launch on startup disabled" });
+      } else {
+        await enable();
+        setLaunchOnBoot(true);
+        showToast({ kind: "ok", text: "Launch on startup enabled" });
+      }
+    } catch (e) {
+      showToast({
+        kind: "err",
+        text: e instanceof Error ? e.message : "Could not update startup setting",
+      });
+    } finally {
+      setBootSaving(false);
+    }
+  }
+
   function copy(label: string, text: string) {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(label);
@@ -143,6 +188,48 @@ ${end}`;
         <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted">
           {dataDir}
         </pre>
+      </Section>
+
+      <Section icon={AppWindow} title="System tray">
+        <p className="text-sm text-text-muted">
+          biTurbo runs in the menu bar / system tray. Closing the window hides it;
+          use the tray icon to show it again. Right-click the tray icon for Show,
+          Hide, or Quit.
+        </p>
+      </Section>
+
+      <Section icon={Power} title="Launch on startup">
+        <p className="text-sm text-text-muted">
+          Start biTurbo automatically when you log in. Supported on macOS and Windows.
+        </p>
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={launchOnBoot}
+            disabled={bootLoading || bootSaving}
+            onClick={toggleLaunchOnBoot}
+            className={clsx(
+              "relative h-6 w-11 rounded-full transition-colors",
+              launchOnBoot ? "bg-accent" : "bg-surface-3",
+              (bootLoading || bootSaving) && "opacity-50"
+            )}
+          >
+            <span
+              className={clsx(
+                "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
+                launchOnBoot && "translate-x-5"
+              )}
+            />
+          </button>
+          <span className="text-sm text-text">
+            {bootLoading
+              ? "Checking…"
+              : launchOnBoot
+                ? "Start on login"
+                : "Do not start on login"}
+          </span>
+        </div>
       </Section>
 
       <Section icon={theme === "dark" ? Moon : Sun} title="Appearance">

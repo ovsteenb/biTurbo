@@ -45,9 +45,8 @@ impl Default for Shared {
     }
 }
 
-static STATE: once_cell::sync::Lazy<Arc<Mutex<Shared>>> = once_cell::sync::Lazy::new(|| {
-    Arc::new(Mutex::new(Shared::default()))
-});
+static STATE: once_cell::sync::Lazy<Arc<Mutex<Shared>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(Shared::default())));
 
 /// Manual job request — `project_id == None` means "consolidate everything".
 #[derive(Debug, Clone)]
@@ -162,7 +161,9 @@ pub fn get_status() -> ConsolidateStatus {
     let next = if g.running || g.queued {
         0
     } else if let Some(finish) = g.last_finish {
-        INTERVAL.as_secs().saturating_sub(finish.elapsed().as_secs())
+        INTERVAL
+            .as_secs()
+            .saturating_sub(finish.elapsed().as_secs())
     } else {
         INTERVAL.as_secs()
     };

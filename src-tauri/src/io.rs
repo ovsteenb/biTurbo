@@ -36,7 +36,10 @@ pub fn import_folder(state: &AppState, project_id: &str, root: &Path) -> BiResul
         .filter_map(|e| {
             let p = e.path().to_path_buf();
             let ext = p.extension()?.to_str()?;
-            if matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown" | "txt" | "org") {
+            if matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "md" | "markdown" | "txt" | "org"
+            ) {
                 Some(p)
             } else {
                 None
@@ -45,12 +48,20 @@ pub fn import_folder(state: &AppState, project_id: &str, root: &Path) -> BiResul
         .collect();
 
     for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else { continue };
-        let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("md");
         let chunks = chunk_markdown(&source);
         for (i, chunk_text) in chunks.into_iter().enumerate() {
-            if chunk_text.trim().is_empty() { continue; }
+            if chunk_text.trim().is_empty() {
+                continue;
+            }
             let input = crate::memory::RememberInput {
                 content: chunk_text,
                 mem_type: Some("fact".to_string()),
@@ -139,14 +150,19 @@ pub fn export_memories(
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(output_path, json).map_err(|e| BiError::Io(format!("write {}: {e}", output_path.display())))?;
+    std::fs::write(output_path, json)
+        .map_err(|e| BiError::Io(format!("write {}: {e}", output_path.display())))?;
     Ok(ExportResult {
         memories_written: mems.len(),
         output_path: output_path.to_string_lossy().to_string(),
     })
 }
 
-pub fn set_project_embed_model(state: &AppState, project_id: &str, model: Option<&str>) -> BiResult<()> {
+pub fn set_project_embed_model(
+    state: &AppState,
+    project_id: &str,
+    model: Option<&str>,
+) -> BiResult<()> {
     let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
         tx.execute(
@@ -165,8 +181,9 @@ pub struct WatchStatus {
 }
 
 type WatchHandle = Arc<Mutex<Option<notify::RecommendedWatcher>>>;
-static WATCHERS: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, WatchHandle>>> =
-    once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
+static WATCHERS: once_cell::sync::Lazy<
+    parking_lot::RwLock<std::collections::HashMap<String, WatchHandle>>,
+> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
 
 pub fn enable_watch(state: &AppState, project_id: &str, root: &Path) -> BiResult<()> {
     let now = chrono::Utc::now().timestamp_millis();
@@ -206,8 +223,8 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
     let root_for_event = root_owned.clone();
     let state_for_event = state_for_cb.clone();
 
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        match res {
+    let mut watcher =
+        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
             Ok(event) => {
                 if !matches!(
                     event.kind,
@@ -234,11 +251,10 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
                 });
             }
             Err(_) => {}
-        }
-    }) {
-        Ok(w) => w,
-        Err(_) => return,
-    };
+        }) {
+            Ok(w) => w,
+            Err(_) => return,
+        };
 
     use notify::Watcher;
     let _ = watcher.watch(root, notify::RecursiveMode::Recursive);
@@ -248,10 +264,14 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
 }
 
 pub fn resume_watches(state: &AppState) {
-    let Ok(conn) = state.db.conn() else { return; };
+    let Ok(conn) = state.db.conn() else {
+        return;
+    };
     let Ok(mut stmt) = conn.prepare(
         "SELECT id, root_path FROM projects WHERE watch_enabled = 1 AND root_path IS NOT NULL",
-    ) else { return; };
+    ) else {
+        return;
+    };
     let rows: Vec<(String, String)> = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .ok()

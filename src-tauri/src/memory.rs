@@ -126,8 +126,18 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
                                   access_count, file_path, start_line, end_line, language)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?8,0,?9,?10,?11,?12)",
             rusqlite::params![
-                uid, project_id, mem_type, input.content, tags_json, input.source_agent,
-                importance, now, input.file_path, input.start_line, input.end_line, input.language,
+                uid,
+                project_id,
+                mem_type,
+                input.content,
+                tags_json,
+                input.source_agent,
+                importance,
+                now,
+                input.file_path,
+                input.start_line,
+                input.end_line,
+                input.language,
             ],
         )?;
         tx.execute(
@@ -173,7 +183,10 @@ pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
     }
     let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
-        tx.execute("DELETE FROM memories WHERE uid = ?1", rusqlite::params![uid])?;
+        tx.execute(
+            "DELETE FROM memories WHERE uid = ?1",
+            rusqlite::params![uid],
+        )?;
         tx.execute(
             "UPDATE projects SET memory_count = MAX(0, memory_count - 1), updated_at = ?1
              WHERE id = ?2",
@@ -188,13 +201,22 @@ pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
 pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memory> {
     let existing = get(state, uid)?.ok_or_else(|| BiError::NotFound(uid.into()))?;
     let now = chrono::Utc::now().timestamp_millis();
-    let new_content = input.content.clone().unwrap_or_else(|| existing.content.clone());
-    let new_type = input.mem_type.clone().unwrap_or_else(|| existing.mem_type.clone());
+    let new_content = input
+        .content
+        .clone()
+        .unwrap_or_else(|| existing.content.clone());
+    let new_type = input
+        .mem_type
+        .clone()
+        .unwrap_or_else(|| existing.mem_type.clone());
     let new_tags_json = match input.tags.clone() {
         Some(t) => serde_json::to_string(&t)?,
         None => serde_json::to_string(&existing.tags)?,
     };
-    let new_imp = input.importance.unwrap_or(existing.importance).clamp(0.0, 1.0);
+    let new_imp = input
+        .importance
+        .unwrap_or(existing.importance)
+        .clamp(0.0, 1.0);
 
     state.db.write(|tx| {
         tx.execute(
@@ -203,7 +225,14 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
              WHERE uid = ?6",
             rusqlite::params![new_content, new_type, new_tags_json, new_imp, now, uid],
         )?;
-        log_activity(tx, Some(&existing.project_id), None, "update", Some(uid), None)?;
+        log_activity(
+            tx,
+            Some(&existing.project_id),
+            None,
+            "update",
+            Some(uid),
+            None,
+        )?;
         Ok(())
     })?;
 
@@ -252,8 +281,13 @@ pub fn search(
         let row_map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(String, f64)> {
             Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
         };
-        let rows: Box<dyn Iterator<Item = rusqlite::Result<(String, f64)>>> = if let Some(t) = mem_type {
-            Box::new(stmt.query_map(rusqlite::params![fts_query, t, &project_id, kk_i64], row_map)?)
+        let rows: Box<dyn Iterator<Item = rusqlite::Result<(String, f64)>>> = if let Some(t) =
+            mem_type
+        {
+            Box::new(stmt.query_map(
+                rusqlite::params![fts_query, t, &project_id, kk_i64],
+                row_map,
+            )?)
         } else {
             Box::new(stmt.query_map(rusqlite::params![fts_query, &project_id, kk_i64], row_map)?)
         };
@@ -332,7 +366,12 @@ pub fn search(
 
     Ok(ranked
         .into_iter()
-        .filter_map(|(uid, score)| by_uid.get(&uid).cloned().map(|memory| MemoryWithScore { memory, score }))
+        .filter_map(|(uid, score)| {
+            by_uid
+                .get(&uid)
+                .cloned()
+                .map(|memory| MemoryWithScore { memory, score })
+        })
         .collect())
 }
 
@@ -390,7 +429,8 @@ pub fn count_by_type(state: &AppState, project_id: Option<&str>) -> BiResult<Vec
     let conn = state.db.conn()?;
     let (sql, p): (String, Vec<Box<dyn rusqlite::ToSql>>) = match project_id {
         Some(pid) => (
-            "SELECT mem_type, COUNT(*) FROM memories WHERE project_id = ?1 GROUP BY mem_type".to_string(),
+            "SELECT mem_type, COUNT(*) FROM memories WHERE project_id = ?1 GROUP BY mem_type"
+                .to_string(),
             vec![Box::new(pid.to_string())],
         ),
         None => (
@@ -409,7 +449,9 @@ pub fn count_by_type(state: &AppState, project_id: Option<&str>) -> BiResult<Vec
 pub fn list_tags(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(String, i64)>> {
     let conn = state.db.conn()?;
     let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    let mut sql = String::from("SELECT tags FROM memories WHERE tags IS NOT NULL AND tags != '[]' AND tags != ''");
+    let mut sql = String::from(
+        "SELECT tags FROM memories WHERE tags IS NOT NULL AND tags != '[]' AND tags != ''",
+    );
     let params: Vec<Box<dyn rusqlite::ToSql>> = match project_id {
         Some(p) => {
             sql.push_str(" AND project_id = ?1");
