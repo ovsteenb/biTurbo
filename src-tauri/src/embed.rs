@@ -1,5 +1,6 @@
 use crate::error::{BiError, BiResult};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use ort::execution_providers::CPUExecutionProvider;
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
@@ -190,7 +191,14 @@ fn resolve_model(name: &str) -> BiResult<(EmbeddingModel, &'static str, usize)> 
 }
 
 fn load_model(model_enum: EmbeddingModel) -> BiResult<TextEmbedding> {
+    // Disable the ONNX CPU memory arena — this is the #1 cause of RAM bloat.
+    // Without this, ONNX Runtime pre-allocates and holds a large arena across
+    // every inference call, growing to multiple GB during batch embedding.
+    // CPUExecutionProvider::default() has use_arena=false, so this disables it.
+    let cpu_ep = CPUExecutionProvider::default().build();
+
     let opts = InitOptions::new(model_enum)
+        .with_execution_providers(vec![cpu_ep])
         .with_show_download_progress(false)
         .with_cache_dir(
             dirs::cache_dir()

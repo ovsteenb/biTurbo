@@ -18,6 +18,18 @@ const PROGRESS_EVERY: usize = 16;
 /// to bound memory and emit progress during the embedding phase.
 const EMBED_WAVE: usize = 512;
 
+/// Capped thread pool for parallel file parsing. Tree-sitter parse trees are
+/// 10–30× the size of source files, so running on all cores concurrently can
+/// consume tens of GB. 3 threads keeps memory bounded while still overlapping
+/// I/O and parsing.
+static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(3)
+        .thread_name(|i| format!("biturbo-parse-{i}"))
+        .build()
+        .expect("parse thread pool")
+});
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IngestResult {
     pub project_id: String,
@@ -167,27 +179,29 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
 
     let total = files.len().max(1);
 
-    // ---- PARALLEL: read + parse + chunk every file across all cores. Each
-    // file is parsed exactly once; chunks and imports come from the same tree.
+    // ---- PARALLEL: read + parse + chunk every file (capped pool so
+    // tree-sitter trees don't blow RAM). Each file parsed exactly once.
     let progress = AtomicUsize::new(0);
-    let parsed: Vec<ParsedFile> = files
-        .par_iter()
-        .map(|path| {
-            let done = progress.fetch_add(1, Ordering::Relaxed);
-            if done % PROGRESS_EVERY == 0 {
-                emit_progress(
-                    state,
-                    project_id,
-                    "parsing",
-                    done,
-                    total,
-                    Some(path.to_string_lossy().to_string()),
-                    0,
-                );
-            }
-            parse_one_file(project_id, root, path)
-        })
-        .collect();
+    let parsed: Vec<ParsedFile> = PARSE_POOL.install(|| {
+        files
+            .par_iter()
+            .map(|path| {
+                let done = progress.fetch_add(1, Ordering::Relaxed);
+                if done % PROGRESS_EVERY == 0 {
+                    emit_progress(
+                        state,
+                        project_id,
+                        "parsing",
+                        done,
+                        total,
+                        Some(path.to_string_lossy().to_string()),
+                        0,
+                    );
+                }
+                parse_one_file(project_id, root, path)
+            })
+            .collect()
+    });
 
     // ---- Sequential assembly: stable ordering, edge resolution against the
     // full file set (so forward references resolve too).

@@ -48,6 +48,7 @@ ndarray = "0.16"
 
 # Embeddings
 fastembed = "4"
+ort = "2.0.0-rc.9"
 
 # MCP — using hand-rolled JSON-RPC for stability; rmcp deps kept off for now.
 # rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
