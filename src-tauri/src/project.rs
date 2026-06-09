@@ -78,6 +78,16 @@ pub fn create(state: &AppState, input: CreateProjectInput) -> BiResult<Project> 
         Ok(())
     })?;
 
+    // Write .biTurbo file if root_path is provided and file doesn't exist
+    if let Some(ref root_path) = input.root_path {
+        let biturbo_file = std::path::PathBuf::from(root_path).join(".biTurbo");
+        // Only write if file doesn't exist (skip/continue if it exists)
+        if !biturbo_file.exists() {
+            let content = format!("projectName={}", input.name);
+            let _ = std::fs::write(&biturbo_file, content);
+        }
+    }
+
     state.refresh_indices()?;
     get(state, &id)
 }

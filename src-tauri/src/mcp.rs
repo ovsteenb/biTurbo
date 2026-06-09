@@ -379,6 +379,25 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                 &json!({ "id": id, "name": name, "kind": kind, "last_seen": now }),
             )?)
         }
+        "get_project_name_from_file" => {
+            let root_path = arg_str(&args, "root_path")?;
+            require_path(&root_path, "root_path")?;
+            let biturbo_file = std::path::PathBuf::from(root_path).join(".biTurbo");
+            match std::fs::read_to_string(&biturbo_file) {
+                Ok(content) => {
+                    let project_name = content
+                        .lines()
+                        .find(|line| line.starts_with("projectName="))
+                        .and_then(|line| line.strip_prefix("projectName="))
+                        .map(String::from);
+                    match project_name {
+                        Some(name) => text(&serde_json::to_string_pretty(&json!({ "projectName": name }))?),
+                        None => text(&serde_json::to_string_pretty(&json!({ "error": "projectName not set in .biTurbo file" }))?),
+                    }
+                }
+                Err(_) => text(&serde_json::to_string_pretty(&json!({ "error": ".biTurbo file not found" }))?),
+            }
+        }
         other => return Err(BiError::Invalid(format!("unknown tool: {other}"))),
     };
     Ok(result)
@@ -449,5 +468,6 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"stats","description":"Global stats.","inputSchema":{"type":"object","properties":{}}},
 {"name":"bootstrap","description":"One-call page mount: stats + projects + recent + tags + agents + consolidate status.","inputSchema":{"type":"object","properties":{}}},
 {"name":"recent_activity","description":"Recent activity entries.","inputSchema":{"type":"object","properties":{"limit":{"type":"number"}}}},
-{"name":"register_agent","description":"Register or update this agent's record. Call once per session.","inputSchema":{"type":"object","required":["name","kind"],"properties":{"name":{"type":"string"},"kind":{"type":"string"},"meta":{"type":"object"}}}}
+{"name":"register_agent","description":"Register or update this agent's record. Call once per session.","inputSchema":{"type":"object","required":["name","kind"],"properties":{"name":{"type":"string"},"kind":{"type":"string"},"meta":{"type":"object"}}}},
+{"name":"get_project_name_from_file","description":"Read projectName from .biTurbo file in project root. Returns {\"projectName\": \"...\"} or {\"error\": \"...\"}.","inputSchema":{"type":"object","required":["root_path"],"properties":{"root_path":{"type":"string"}}}}
 ]"#;
