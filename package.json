@@ -4,14 +4,6 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Local-first memory layer for AI coding agents. turbovec + Tauri 2 + MCP.",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ],
-    "allowedBuiltScripts": [
-      "esbuild"
-    ]
-  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
