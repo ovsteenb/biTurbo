@@ -79,7 +79,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         ..Default::default()
     };
 
-    emit_progress(state, "scanning", 0, 1, None, 0);
+    emit_progress(state, project_id, "scanning", 0, 1, None, 0);
 
     let files: Vec<PathBuf> = WalkBuilder::new(root)
         .follow_links(false)
@@ -138,6 +138,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     for (idx, path) in files.iter().enumerate() {
         emit_progress(
             state,
+            project_id,
             "embedding",
             idx,
             total,
@@ -205,7 +206,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     }
 
     // ---- BATCHED: embed all chunks in one call (fastembed handles batching internally) ----
-    emit_progress(state, "embedding", total, total, None, result.chunks_indexed);
+    emit_progress(state, project_id, "embedding", total, total, None, result.chunks_indexed);
     let embed_texts: Vec<&str> = pending_chunks.iter().map(|c| c.content_for_embed.as_str()).collect();
     let embeddings = state.embedder.embed_batch(&embed_texts)?;
 
@@ -264,7 +265,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
 
     // ---- BATCHED: insert all edges in one multi-row INSERT ----
     if !pending_edges.is_empty() {
-        emit_progress(state, "edges", total, total, None, result.chunks_indexed);
+        emit_progress(state, project_id, "edges", total, total, None, result.chunks_indexed);
         let n = pending_edges.len();
         let placeholders: Vec<String> = (0..n)
             .map(|i| {
@@ -316,7 +317,6 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     })?;
 
     state.embedder.release_if_idle();
-    emit_progress(state, "done", total, total, None, result.chunks_indexed);
 
     Ok(result)
 }
@@ -758,6 +758,7 @@ fn build_structure_summary(root: &Path) -> BiResult<String> {
 
 fn emit_progress(
     state: &AppState,
+    project_id: &str,
     phase: &str,
     current: usize,
     total: usize,
@@ -768,7 +769,7 @@ fn emit_progress(
         let _ = app.emit(
             "ingest:progress",
             IngestProgress {
-                project_id: state.default_project_id.clone(),
+                project_id: project_id.to_string(),
                 phase: phase.to_string(),
                 current,
                 total,

@@ -2,24 +2,14 @@ import { useEffect, useState } from "react";
 import { useApp, useConfirm } from "../lib/store";
 import { api } from "../lib/api";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
 import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2, Eye, Download, FileText, Radar } from "lucide-react";
 import clsx from "clsx";
-
-interface IngestProgress {
-  project_id: string;
-  phase: string;
-  current: number;
-  total: number;
-  file: string | null;
-  chunks_so_far: number;
-}
+import type { IngestProgress } from "../lib/types";
 
 export function Projects() {
   const projects = useApp((s) => s.projects);
   const refreshProjects = useApp((s) => s.refreshProjects);
   const refreshStats = useApp((s) => s.refreshStats);
-  const refreshGraph = useApp((s) => s.refreshGraph);
   const showToast = useApp((s) => s.showToast);
   const setCurrentProjectId = useApp((s) => s.setCurrentProjectId);
   const currentProjectId = useApp((s) => s.currentProjectId);
@@ -29,8 +19,8 @@ export function Projects() {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [rootPath, setRootPath] = useState("");
+  const ingestJobs = useApp((s) => s.ingestJobs);
   const [busy, setBusy] = useState<string | null>(null);
-  const [progress, setProgress] = useState<IngestProgress | null>(null);
   const [watchOn, setWatchOn] = useState<Record<string, boolean>>({});
   const [importingFor, setImportingFor] = useState<string | null>(null);
 
@@ -40,17 +30,7 @@ export function Projects() {
     setWatchOn(next);
   }, [projects]);
 
-  useEffect(() => {
-    const un = listen<IngestProgress>("ingest:progress", (e) => {
-      setProgress(e.payload);
-      if (e.payload.phase === "done") {
-        setTimeout(() => setProgress(null), 1200);
-      }
-    });
-    return () => {
-      un.then((f) => f()).catch(() => {});
-    };
-  }, []);
+  const activeIngest = Object.values(ingestJobs)[0] as IngestProgress | undefined;
 
   async function pickFolder() {
     const sel = await open({ directory: true, multiple: false });
@@ -86,28 +66,11 @@ export function Projects() {
       showToast({ kind: "err", text: "Set a root_path first" });
       return;
     }
-    setBusy(projectId);
-    setProgress({
-      project_id: projectId,
-      phase: "scanning",
-      current: 0,
-      total: 0,
-      file: null,
-      chunks_so_far: 0,
-    });
     try {
-      const job = await api.ingestProject(projectId, root);
-      await refreshProjects();
-      await refreshStats();
-      await refreshGraph().catch(() => {});
-      showToast({
-        kind: "ok",
-        text: `Indexing ${projectId} · job ${job.job_id.slice(0, 8)}…`,
-      });
+      await api.ingestProject(projectId, root);
+      showToast({ kind: "info", text: `Started indexing ${projectId}…` });
     } catch (e) {
       showToast({ kind: "err", text: String(e) });
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -213,38 +176,38 @@ export function Projects() {
         </button>
       </div>
 
-      {progress && (
+      {activeIngest && (
         <div className="card p-4">
           <div className="mb-2 flex items-center gap-2 text-sm">
             <Loader2 size={14} className="animate-spin text-accent" />
             <span className="font-medium text-text">
-              {progress.phase === "scanning" && "Scanning project…"}
-              {progress.phase === "embedding" && "Embedding chunks…"}
-              {progress.phase === "edges" && "Building edges…"}
-              {progress.phase === "done" && "Done"}
+              {activeIngest.phase === "scanning" && "Scanning project…"}
+              {activeIngest.phase === "embedding" && "Embedding chunks…"}
+              {activeIngest.phase === "edges" && "Building edges…"}
+              {activeIngest.phase === "done" && "Done"}
             </span>
-            {progress.total > 0 && progress.phase !== "done" && (
+            {activeIngest.total > 0 && activeIngest.phase !== "done" && (
               <span className="ml-auto font-mono text-xs text-text-muted">
-                {progress.current}/{progress.total} · {progress.chunks_so_far} chunks
+                {activeIngest.current}/{activeIngest.total} · {activeIngest.chunks_so_far} chunks
               </span>
             )}
-            {progress.phase === "done" && (
+            {activeIngest.phase === "done" && (
               <span className="ml-auto font-mono text-xs text-success">
-                {progress.chunks_so_far} chunks indexed
+                {activeIngest.chunks_so_far} chunks indexed
               </span>
             )}
           </div>
-          {progress.total > 0 && progress.phase !== "done" && (
+          {activeIngest.total > 0 && activeIngest.phase !== "done" && (
             <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">
               <div
                 className="h-full bg-accent transition-all"
-                style={{ width: `${Math.min(100, (progress.current / progress.total) * 100)}%` }}
+                style={{ width: `${Math.min(100, (activeIngest.current / activeIngest.total) * 100)}%` }}
               />
             </div>
           )}
-          {progress.file && (
+          {activeIngest.file && (
             <div className="mt-2 truncate font-mono text-[11px] text-text-dim">
-              {progress.file}
+              {activeIngest.file}
             </div>
           )}
         </div>
@@ -312,7 +275,7 @@ export function Projects() {
       <div className="grid gap-3">
         {projects.map((p) => {
           const active = p.id === currentProjectId;
-          const isIngesting = busy === p.id;
+          const isIngesting = !!ingestJobs[p.id];
           return (
             <div
               key={p.id}

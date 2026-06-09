@@ -7,7 +7,7 @@ use crate::scheduler::ConsolidateStatus;
 use crate::state::AppState;
 use crate::ingest;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[derive(Serialize)]
 pub struct Stats {
@@ -147,11 +147,34 @@ pub struct IngestArgs {
     pub root_path: String,
 }
 
+#[derive(Serialize)]
+pub struct IngestJobResponse {
+    pub job_id: String,
+    pub project_id: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct IngestDone {
+    pub job_id: String,
+    pub project_id: String,
+    pub files_indexed: usize,
+    pub chunks_indexed: usize,
+    pub edges_created: usize,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Serialize, Clone)]
+pub struct IngestError {
+    pub job_id: String,
+    pub project_id: String,
+    pub error: String,
+}
+
 #[tauri::command]
 pub fn ingest_project(
     state: State<'_, AppState>,
     args: IngestArgs,
-) -> BiResult<ingest::IngestResult> {
+) -> BiResult<IngestJobResponse> {
     project::get(state.inner(), &args.project_id).map_err(|_| {
         crate::error::BiError::Invalid(format!(
             "project '{}' does not exist — create it first",
@@ -165,7 +188,50 @@ pub fn ingest_project(
             args.root_path
         )));
     }
-    ingest::ingest_project(state.inner(), &args.project_id, &root)
+
+    let job_id = format!("ing-{}", uuid::Uuid::new_v4());
+    let state_clone = state.inner().clone();
+    let project_id = args.project_id.clone();
+    let job_id_for_thread = job_id.clone();
+
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        match ingest::ingest_project(&state_clone, &project_id, &root) {
+            Ok(result) => {
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                if let Some(app) = &state_clone.app {
+                    let _ = app.emit(
+                        "ingest:done",
+                        IngestDone {
+                            job_id: job_id_for_thread.clone(),
+                            project_id: project_id.clone(),
+                            files_indexed: result.files_indexed,
+                            chunks_indexed: result.chunks_indexed,
+                            edges_created: result.edges_created,
+                            elapsed_ms,
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                if let Some(app) = &state_clone.app {
+                    let _ = app.emit(
+                        "ingest:error",
+                        IngestError {
+                            job_id: job_id_for_thread,
+                            project_id: project_id.clone(),
+                            error: e.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(IngestJobResponse {
+        job_id,
+        project_id: args.project_id,
+    })
 }
 
 #[derive(Deserialize)]

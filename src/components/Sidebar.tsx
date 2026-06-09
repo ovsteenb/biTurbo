@@ -35,7 +35,7 @@ export function Sidebar() {
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-border-subtle bg-surface/40">
       {/* Brand */}
-      <div className="flex h-14 items-center gap-2 border-b border-border-subtle px-4">
+      <div className="flex h-24 items-center gap-10 border-b border-border-subtle px-4">
         <Logo />
         <div className="leading-tight">
           <div className="font-serif text-lg font-medium text-text">biTurbo</div>

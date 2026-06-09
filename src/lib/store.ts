@@ -305,7 +305,7 @@ if (typeof window !== "undefined") {
         useApp.setState((s) => ({
           ingestJobs: {
             ...s.ingestJobs,
-            [`${p.project_id}:ingest`]: p,
+            [p.project_id]: p,
           },
         }));
       }),
@@ -320,10 +320,22 @@ if (typeof window !== "undefined") {
         elapsed_ms: number;
       }>("ingest:done", (e) => {
         const d = e.payload;
-        useApp.setState((s) => {
-          const { [d.project_id]: _, ...rest } = s.ingestJobs;
-          return { ingestJobs: rest };
-        });
+        useApp.setState((s) => ({
+          ingestJobs: {
+            ...s.ingestJobs,
+            [d.project_id]: {
+              ...s.ingestJobs[d.project_id],
+              phase: "done",
+              current: s.ingestJobs[d.project_id]?.total ?? 0,
+            } as IngestProgress,
+          },
+        }));
+        setTimeout(() => {
+          useApp.setState((s) => {
+            const { [d.project_id]: _, ...rest } = s.ingestJobs;
+            return { ingestJobs: rest };
+          });
+        }, 1500);
         useApp.getState().showToast({
           kind: "ok",
           text: `Indexed ${d.files_indexed} files · ${d.chunks_indexed} chunks · ${Math.round(d.elapsed_ms / 100) / 10}s`,
@@ -340,10 +352,12 @@ if (typeof window !== "undefined") {
         "ingest:error",
         (e) => {
           const d = e.payload;
-          useApp.setState((s) => {
-            const { [d.project_id]: _, ...rest } = s.ingestJobs;
-            return { ingestJobs: rest };
-          });
+          setTimeout(() => {
+            useApp.setState((s) => {
+              const { [d.project_id]: _, ...rest } = s.ingestJobs;
+              return { ingestJobs: rest };
+            });
+          }, 1500);
           useApp.getState().showToast({
             kind: "err",
             text: `Ingest failed: ${d.error}`,

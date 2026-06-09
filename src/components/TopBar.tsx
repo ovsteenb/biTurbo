@@ -1,4 +1,4 @@
-import { Plus, Sparkles, Sun, Moon } from "lucide-react";
+import { Plus, Sparkles, Sun, Moon, Loader2 } from "lucide-react";
 import { useApp } from "../lib/store";
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -19,6 +19,10 @@ export function TopBar() {
   const [consolidating, setConsolidating] = useState(false);
 
   const currentProject = projects.find((p) => p.id === currentProjectId);
+  const ingestJobs = useApp((s) => s.ingestJobs);
+  const activeIngests = Object.values(ingestJobs).filter(
+    (j) => j.phase !== "done"
+  );
 
   useEffect(() => {
     const unlistenP = listen<ConsolidateReport>("consolidate:done", (e) => {
@@ -64,6 +68,26 @@ export function TopBar() {
       </div>
 
       <div className="flex-1" />
+
+      {/* Ingest progress */}
+      {activeIngests.length > 0 && (
+        <div className="hidden items-center gap-2 md:flex">
+          <Loader2 size={12} className="animate-spin text-accent" />
+          <span className="text-[11px] capitalize text-text-muted">
+            {activeIngests[0].phase}…
+          </span>
+          {activeIngests[0].total > 0 && (
+            <div className="h-1 w-16 overflow-hidden rounded-full bg-surface-2">
+              <div
+                className="h-full bg-accent transition-all"
+                style={{
+                  width: `${Math.min(100, (activeIngests[0].current / activeIngests[0].total) * 100)}%`,
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Index size badge */}
       {stats && (
