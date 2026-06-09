@@ -155,9 +155,9 @@ impl Embedder {
 
 fn resolve_model(name: &str) -> BiResult<(EmbeddingModel, &'static str, usize)> {
     Ok(match name {
-        "BGE-small-en-v1.5" | "BGE-small-en" => (EmbeddingModel::BGESmallENV15Q, "BGE-small-en-v1.5", 384),
-        "BGE-base-en-v1.5" | "BGE-base-en" => (EmbeddingModel::BGEBaseENV15Q, "BGE-base-en-v1.5", 768),
-        "BGE-large-en-v1.5" | "BGE-large-en" => (EmbeddingModel::BGELargeENV15Q, "BGE-large-en-v1.5", 1024),
+        "BGE-small-en-v1.5" | "BGE-small-en" => (EmbeddingModel::BGESmallENV15, "BGE-small-en-v1.5", 384),
+        "BGE-base-en-v1.5" | "BGE-base-en" => (EmbeddingModel::BGEBaseENV15, "BGE-base-en-v1.5", 768),
+        "BGE-large-en-v1.5" | "BGE-large-en" => (EmbeddingModel::BGELargeENV15, "BGE-large-en-v1.5", 1024),
         "all-MiniLM-L6-v2" => (EmbeddingModel::AllMiniLML6V2, "all-MiniLM-L6-v2", 384),
         other => {
             return Err(BiError::Embed(format!(
