@@ -68,6 +68,31 @@ cd src-tauri && cargo build --release --bin biturbo-mcp
 
 For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your platform (Xcode CLT on macOS, webkit2gtk on Linux).
 
+### Building for distribution (signed .dmg)
+
+To build a signed macOS .dmg for distribution:
+
+```bash
+pnpm tauri:build
+```
+
+**Prerequisites**:
+- macOS Developer certificate (Developer ID Application) installed in your keychain
+- Signing identity configured in `src-tauri/tauri.conf.json` under `bundle.macOS.signingIdentity`
+
+**Output**: `src-tauri/target/release/bundle/dmg/biTurbo_0.1.0_aarch64.dmg`
+
+The app is code-signed but not notarized. To notarize for public distribution, set these environment variables before building:
+- `APPLE_ID` — your Apple ID email
+- `APPLE_PASSWORD` — app-specific password (generate at appleid.apple.com)
+- `APPLE_TEAM_ID` — your team ID (10 characters, e.g., `89NFSUEFES`)
+
+```bash
+APPLE_ID="your@email.com" APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx" APPLE_TEAM_ID="89NFSUEFES" pnpm tauri:build
+```
+
+For App Store distribution, use the "Apple Distribution" certificate instead of "Developer ID Application".
+
 ### Verify
 
 ```bash
