@@ -14,6 +14,9 @@ use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 const CHUNK_INSERT_BATCH: usize = 64;
 const PROGRESS_EVERY: usize = 16;
+/// Wave size for streaming embeddings: process EMBED_WAVE chunks at a time
+/// to bound memory and emit progress during the embedding phase.
+const EMBED_WAVE: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IngestResult {
@@ -215,32 +218,38 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         pending_chunks.extend(pf.chunks);
     }
 
-    // ---- BATCHED: embed all chunks in one call (fastembed handles batching internally) ----
-    emit_progress(
-        state,
-        project_id,
-        "embedding",
-        total,
-        total,
-        None,
-        result.chunks_indexed,
-    );
-    let embed_texts: Vec<&str> = pending_chunks
-        .iter()
-        .map(|c| c.content_for_embed.as_str())
-        .collect();
-    let embeddings = state.embedder.embed_batch(&embed_texts)?;
-
-    // ---- Vector index: one batched add under a single lock acquisition ----
+    // ---- STREAMED: embed in waves to bound memory and emit progress ----
     let idx = state.get_or_load_index(project_id)?;
-    let index_items: Vec<(String, Vec<f32>)> = pending_chunks
-        .iter()
-        .zip(embeddings)
-        .map(|(c, emb)| (c.uid.clone(), emb))
-        .collect();
-    idx.add_batch(&index_items)?;
-    for c in &pending_chunks {
-        pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
+    let total_chunks = pending_chunks.len();
+    let mut embedded_so_far = 0;
+
+    for wave in pending_chunks.chunks(EMBED_WAVE) {
+        let embed_texts: Vec<&str> = wave.iter().map(|c| c.content_for_embed.as_str()).collect();
+        let embeddings = state.embedder.embed_batch_uncached(&embed_texts)?;
+
+        // Add to index immediately, drop embeddings after
+        let index_items: Vec<(String, Vec<f32>)> = wave
+            .iter()
+            .zip(embeddings)
+            .map(|(c, emb)| (c.uid.clone(), emb))
+            .collect();
+        idx.add_batch(&index_items)?;
+
+        // Add member_of edges for this wave
+        for c in wave {
+            pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
+        }
+
+        embedded_so_far += wave.len();
+        emit_progress(
+            state,
+            project_id,
+            "embedding",
+            embedded_so_far,
+            total_chunks,
+            None,
+            embedded_so_far,
+        );
     }
     let _ = idx.flush();
 

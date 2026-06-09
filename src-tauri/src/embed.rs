@@ -10,6 +10,9 @@ pub const DEFAULT_DIM: usize = 384;
 pub const DEFAULT_MODEL: &str = "BGE-small-en-v1.5";
 const QUERY_CACHE_CAP: usize = 256;
 const IDLE_RELEASE: Duration = Duration::from_secs(60 * 60);
+/// Explicit batch size for uncached bulk embeddings. Bounded to keep ONNX
+/// arena memory low (32 texts × 512 tokens ≈ few hundred MB vs multi-GB).
+const EMBED_BATCH: usize = 32;
 
 pub struct Embedder {
     /// RwLock (not Mutex): `TextEmbedding::embed` takes `&self` and the
@@ -102,6 +105,27 @@ impl Embedder {
             }
         }
         Ok(cached.into_iter().map(|o| o.unwrap()).collect())
+    }
+
+    /// Uncached bulk embedding for large batches (e.g., project ingest).
+    /// Skips the LRU cache to avoid pollution and uses an explicit small batch
+    /// size to bound ONNX arena memory. Processes in chunks of EMBED_BATCH.
+    pub fn embed_batch_uncached(&self, texts: &[&str]) -> BiResult<Vec<Vec<f32>>> {
+        self.ensure_model()?;
+        let guard = self.model.read();
+        let model = guard
+            .as_ref()
+            .ok_or_else(|| BiError::Embed("model released mid-embed".into()))?;
+
+        let mut all_results = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(EMBED_BATCH) {
+            let results = model
+                .embed(chunk.to_vec(), Some(EMBED_BATCH))
+                .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
+            all_results.extend(results);
+        }
+        drop(guard);
+        Ok(all_results)
     }
 
     pub fn release_if_idle(&self) {
