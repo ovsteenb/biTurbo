@@ -16,7 +16,7 @@ const CHUNK_INSERT_BATCH: usize = 64;
 const PROGRESS_EVERY: usize = 16;
 /// Wave size for streaming embeddings: process EMBED_WAVE chunks at a time
 /// to bound memory and emit progress during the embedding phase.
-const EMBED_WAVE: usize = 128;
+const EMBED_WAVE: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IngestResult {
@@ -665,6 +665,13 @@ fn parse_one_file(project_id: &str, root: &Path, path: &Path) -> ParsedFile {
             "```{lang}\n// {}:{}-{}\n{}```\n{}",
             file_name, chunk.start_line, chunk.end_line, chunk.code, chunk.kind,
         );
+        // Pre-truncate to ~4000 chars (model truncates at 512 tokens anyway)
+        // This saves tokenization time on huge chunks with no quality loss
+        let embed_text = if embed_text.len() > 4000 {
+            embed_text.chars().take(4000).collect()
+        } else {
+            embed_text
+        };
         let db_content = format!(
             "// {}:{}-{}\n{}",
             file_name, chunk.start_line, chunk.end_line, chunk.code,

@@ -2,6 +2,7 @@ use crate::error::{BiError, BiResult};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use lru::LruCache;
 use parking_lot::{Mutex, RwLock};
+use rayon::prelude::*;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -110,6 +111,7 @@ impl Embedder {
     /// Uncached bulk embedding for large batches (e.g., project ingest).
     /// Skips the LRU cache to avoid pollution and uses an explicit small batch
     /// size to bound ONNX arena memory. Processes in chunks of EMBED_BATCH.
+    /// Sub-batches are processed in parallel using rayon to utilize all cores.
     pub fn embed_batch_uncached(&self, texts: &[&str]) -> BiResult<Vec<Vec<f32>>> {
         self.ensure_model()?;
         let guard = self.model.read();
@@ -117,15 +119,25 @@ impl Embedder {
             .as_ref()
             .ok_or_else(|| BiError::Embed("model released mid-embed".into()))?;
 
-        let mut all_results = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(EMBED_BATCH) {
-            let results = model
-                .embed(chunk.to_vec(), Some(EMBED_BATCH))
-                .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
-            all_results.extend(results);
-        }
+        let model_ref = &*model;
+        let all_results: Vec<Vec<Vec<f32>>> = texts
+            .par_chunks(EMBED_BATCH)
+            .map(|chunk: &[&str]| {
+                let results = model_ref
+                    .embed(chunk.to_vec(), Some(EMBED_BATCH))
+                    .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
+                Ok(results)
+            })
+            .collect::<Result<Vec<_>, BiError>>()?;
+
         drop(guard);
-        Ok(all_results)
+
+        // Flatten the results in order
+        let mut flattened = Vec::with_capacity(texts.len());
+        for mut chunk_results in all_results {
+            flattened.append(&mut chunk_results);
+        }
+        Ok(flattened)
     }
 
     pub fn release_if_idle(&self) {
@@ -143,9 +155,9 @@ impl Embedder {
 
 fn resolve_model(name: &str) -> BiResult<(EmbeddingModel, &'static str, usize)> {
     Ok(match name {
-        "BGE-small-en-v1.5" | "BGE-small-en" => (EmbeddingModel::BGESmallENV15, "BGE-small-en-v1.5", 384),
-        "BGE-base-en-v1.5" | "BGE-base-en" => (EmbeddingModel::BGEBaseENV15, "BGE-base-en-v1.5", 768),
-        "BGE-large-en-v1.5" | "BGE-large-en" => (EmbeddingModel::BGELargeENV15, "BGE-large-en-v1.5", 1024),
+        "BGE-small-en-v1.5" | "BGE-small-en" => (EmbeddingModel::BGESmallENV15Q, "BGE-small-en-v1.5", 384),
+        "BGE-base-en-v1.5" | "BGE-base-en" => (EmbeddingModel::BGEBaseENV15Q, "BGE-base-en-v1.5", 768),
+        "BGE-large-en-v1.5" | "BGE-large-en" => (EmbeddingModel::BGELargeENV15Q, "BGE-large-en-v1.5", 1024),
         "all-MiniLM-L6-v2" => (EmbeddingModel::AllMiniLML6V2, "all-MiniLM-L6-v2", 384),
         other => {
             return Err(BiError::Embed(format!(
