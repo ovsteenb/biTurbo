@@ -144,6 +144,11 @@ pub struct IngestArgs {
     pub root_path: String,
 }
 
+#[derive(Deserialize)]
+pub struct MultiIngestArgs {
+    pub projects: Vec<(String, String)>,
+}
+
 #[derive(Serialize)]
 pub struct IngestJobResponse {
     pub job_id: String,
@@ -165,6 +170,16 @@ pub struct IngestError {
     pub job_id: String,
     pub project_id: String,
     pub error: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct MultiIngestDone {
+    pub job_id: String,
+    pub total_files_indexed: usize,
+    pub total_chunks_indexed: usize,
+    pub total_edges_created: usize,
+    pub elapsed_ms: u64,
+    pub results: Vec<ingest::IngestResult>,
 }
 
 #[tauri::command]
@@ -225,6 +240,73 @@ pub fn ingest_project(state: State<'_, AppState>, args: IngestArgs) -> BiResult<
     Ok(IngestJobResponse {
         job_id,
         project_id: args.project_id,
+    })
+}
+
+#[tauri::command]
+pub fn ingest_multiple_projects(state: State<'_, AppState>, args: MultiIngestArgs) -> BiResult<IngestJobResponse> {
+    // Validate all projects exist and paths exist
+    for (project_id, root_path) in &args.projects {
+        project::get(state.inner(), project_id).map_err(|_| {
+            crate::error::BiError::Invalid(format!(
+                "project '{}' does not exist — create it first",
+                project_id
+            ))
+        })?;
+        let root = std::path::PathBuf::from(root_path);
+        if !root.exists() {
+            return Err(crate::error::BiError::Invalid(format!(
+                "root_path '{}' for project '{}' does not exist on disk",
+                root_path, project_id
+            )));
+        }
+    }
+
+    let job_id = format!("multi-ing-{}", uuid::Uuid::new_v4());
+    let state_clone = state.inner().clone();
+    let job_id_for_thread = job_id.clone();
+    let projects: Vec<(String, std::path::PathBuf)> = args.projects
+        .into_iter()
+        .map(|(project_id, root_path)| (project_id, std::path::PathBuf::from(root_path)))
+        .collect();
+
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        match ingest::ingest_multiple_projects(&state_clone, projects) {
+            Ok(result) => {
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                if let Some(app) = &state_clone.app {
+                    let _ = app.emit(
+                        "multi-ingest:done",
+                        MultiIngestDone {
+                            job_id: job_id_for_thread.clone(),
+                            total_files_indexed: result.total_files_indexed,
+                            total_chunks_indexed: result.total_chunks_indexed,
+                            total_edges_created: result.total_edges_created,
+                            elapsed_ms,
+                            results: result.results,
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                if let Some(app) = &state_clone.app {
+                    let _ = app.emit(
+                        "ingest:error",
+                        IngestError {
+                            job_id: job_id_for_thread,
+                            project_id: "multiple".to_string(),
+                            error: e.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(IngestJobResponse {
+        job_id,
+        project_id: "multiple".to_string(),
     })
 }
 

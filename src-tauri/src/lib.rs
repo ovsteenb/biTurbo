@@ -88,6 +88,7 @@ pub fn run() {
             commands::delete_project,
             commands::get_project,
             commands::ingest_project,
+            commands::ingest_multiple_projects,
             commands::get_project_graph,
             commands::list_tags,
             commands::consolidate_now,

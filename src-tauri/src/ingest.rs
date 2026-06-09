@@ -29,6 +29,16 @@ pub struct IngestResult {
     pub edges_created: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MultiIngestResult {
+    pub results: Vec<IngestResult>,
+    pub total_files_indexed: usize,
+    pub total_chunks_indexed: usize,
+    pub total_bytes_processed: u64,
+    pub total_errors: usize,
+    pub total_edges_created: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IngestProgress {
     pub project_id: String,
@@ -359,6 +369,47 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     state.embedder.release_if_idle();
 
     Ok(result)
+}
+
+/// Ingest multiple projects in parallel. Each project is processed concurrently
+/// using rayon. The embedder and database are thread-safe, so this is safe.
+/// Progress events include project_id to distinguish which project is being processed.
+pub fn ingest_multiple_projects(
+    state: &AppState,
+    projects: Vec<(String, PathBuf)>,
+) -> BiResult<MultiIngestResult> {
+    let results: Vec<Result<IngestResult, BiError>> = projects
+        .par_iter()
+        .map(|(project_id, root)| {
+            ingest_project(state, project_id, root).map_err(|e| {
+                BiError::Ingest(format!("project {} failed: {}", project_id, e))
+            })
+        })
+        .collect();
+
+    let mut multi_result = MultiIngestResult::default();
+    for result in results {
+        match result {
+            Ok(r) => {
+                multi_result.total_files_indexed += r.files_indexed;
+                multi_result.total_chunks_indexed += r.chunks_indexed;
+                multi_result.total_bytes_processed += r.bytes_processed;
+                multi_result.total_errors += r.errors.len();
+                multi_result.total_edges_created += r.edges_created;
+                multi_result.results.push(r);
+            }
+            Err(e) => {
+                multi_result.total_errors += 1;
+                multi_result.results.push(IngestResult {
+                    project_id: "unknown".to_string(),
+                    errors: vec![e.to_string()],
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    Ok(multi_result)
 }
 
 pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphData> {
