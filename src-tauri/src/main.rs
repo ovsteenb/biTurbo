@@ -2,5 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // Force CPU-only ONNX Runtime before any library triggers ort init.
+    std::env::set_var("ORT_DISABLE_CORE_ML", "1");
+    std::env::set_var("ORT_DNNL_DISABLE", "1");
     biturbo_lib::run()
 }

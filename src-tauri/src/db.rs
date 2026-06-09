@@ -29,14 +29,14 @@ pub fn open_pool(db_path: &Path) -> BiResult<DbPool> {
              PRAGMA foreign_keys=ON;
              PRAGMA temp_store=MEMORY;
              PRAGMA busy_timeout=5000;
-             PRAGMA cache_size=-65536;          -- 64 MiB page cache per connection
-             PRAGMA mmap_size=268435456;        -- 256 MiB memory-mapped reads
+             PRAGMA cache_size=-16384;          -- 16 MiB page cache per connection
+             PRAGMA mmap_size=67108864;         -- 64 MiB memory-mapped reads
              PRAGMA wal_autocheckpoint=2000;",
         )?;
         c.set_prepared_statement_cache_capacity(64);
         Ok(())
     });
-    let pool = Pool::builder().max_size(12).build(manager)?;
+    let pool = Pool::builder().max_size(6).build(manager)?;
     let conn = pool.get()?;
     init_schema(&conn)?;
     Ok(pool)

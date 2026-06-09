@@ -67,6 +67,17 @@ pub fn spawn(state: Arc<AppState>) {
         }
     });
 
+    // Periodically release the ONNX embedding session if idle to reclaim RAM.
+    let state_for_release = state.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(120));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            state_for_release.embedder.release_if_idle();
+        }
+    });
+
     // Index flushing is handled by the thread spawned in AppState::open, which
     // also covers the standalone MCP binary.
 

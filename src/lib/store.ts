@@ -163,11 +163,16 @@ export const useApp = create<AppStore>((set, get) => ({
       limit: 50,
       offset,
     });
-    set((s) => ({
-      memories: [...s.memories, ...batch],
-      memoryOffset: offset + batch.length,
-      hasMoreMemories: batch.length === 50,
-    }));
+    set((s) => {
+      const combined = [...s.memories, ...batch];
+      // Cap frontend memory usage: keep the newest 500 memories.
+      const trimmed = combined.length > 500 ? combined.slice(-500) : combined;
+      return {
+        memories: trimmed,
+        memoryOffset: offset + batch.length,
+        hasMoreMemories: batch.length === 50,
+      };
+    });
   },
   refreshMemories: async () => {
     const mems = await api.listMemories({

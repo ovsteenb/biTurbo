@@ -5,12 +5,18 @@ use crate::db::Db;
 use crate::embed::Embedder;
 use crate::error::{BiError, BiResult};
 use crate::index_engine::ProjectIndex;
+use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
+
+/// Max bytes of index files to keep loaded in memory at once.
+/// turbovec keeps the full quantized index in RAM, so this directly
+/// caps RSS. 512 MiB is enough for several large projects.
+const DEFAULT_INDEX_BUDGET: u64 = 512 * 1024 * 1024;
 
 pub struct AppState {
     pub data_dir: PathBuf,
@@ -20,6 +26,8 @@ pub struct AppState {
     pub default_project_id: String,
     pub app: Option<AppHandle>,
     pub index_size_cache: parking_lot::Mutex<Option<(Instant, u64)>>,
+    index_access_times: Arc<Mutex<HashMap<String, Instant>>>,
+    pub index_memory_budget: u64,
 }
 
 impl Clone for AppState {
@@ -32,6 +40,8 @@ impl Clone for AppState {
             default_project_id: self.default_project_id.clone(),
             app: self.app.clone(),
             index_size_cache: parking_lot::Mutex::new(None),
+            index_access_times: self.index_access_times.clone(),
+            index_memory_budget: self.index_memory_budget,
         }
     }
 }
@@ -62,26 +72,30 @@ impl AppState {
             default_project_id: default_id,
             app: None,
             index_size_cache: parking_lot::Mutex::new(None),
+            index_access_times: Arc::new(Mutex::new(HashMap::new())),
+            index_memory_budget: DEFAULT_INDEX_BUDGET,
         };
 
-        // Warm indices for existing projects.
+        // Ensure index files exist on disk, but do NOT load them into memory.
         state.refresh_indices()?;
 
-        // Debounced index flusher. A plain thread (not tokio) so it runs in
-        // every consumer of AppState — the Tauri app AND the standalone MCP
-        // binary. This lets write paths skip their own synchronous full-index
-        // rewrites: they just mark the index dirty and we persist here.
+        // Debounced index flusher + LRU evictor. A plain thread (not tokio)
+        // so it runs in every consumer of AppState.
         {
-            let indices = state.indices.clone();
+            let state_for_thread = state.clone();
             std::thread::Builder::new()
                 .name("biturbo-index-flusher".into())
                 .spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(5));
+                    // 1) flush dirty indices
                     let snapshot: Vec<Arc<ProjectIndex>> =
-                        indices.read().values().cloned().collect();
+                        state_for_thread.indices.read().values().cloned().collect();
                     for idx in snapshot {
                         let _ = idx.maybe_flush(std::time::Duration::from_millis(300), false);
                     }
+                    // 2) evict old indices (not touched in 10 min or over budget)
+                    let _ = state_for_thread.evict_stale_indices(std::time::Duration::from_secs(600));
+                    let _ = state_for_thread.evict_if_over_budget();
                 })
                 .ok();
         }
@@ -89,7 +103,8 @@ impl AppState {
         Ok(state)
     }
 
-    /// (Re-)scan projects table and ensure an in-memory index exists for each.
+    /// Ensure index files exist on disk for every project, but do NOT load
+    /// them into the in-memory cache. This keeps startup RSS low.
     pub fn refresh_indices(&self) -> BiResult<()> {
         let conn = self.db.conn()?;
         let mut stmt = conn.prepare("SELECT id, dim, bit_width FROM projects")?;
@@ -105,35 +120,26 @@ impl AppState {
             .collect();
         drop(stmt);
 
-        // Open any missing index files BEFORE taking the write lock, so the
-        // critical section is just map inserts.
         let data_dir = self.data_dir.join("indices");
-        let to_open: Vec<(String, usize, u8)> = {
-            let existing = self.indices.read();
-            rows.into_iter()
-                .filter(|(pid, _, _)| !existing.contains_key(pid))
-                .collect()
-        };
-        let mut opened: Vec<(String, Arc<ProjectIndex>)> = Vec::with_capacity(to_open.len());
-        for (pid, dim, bw) in to_open {
-            let idx = Arc::new(
-                ProjectIndex::open_or_create(&pid, dim, bw as usize, &data_dir)
-                    .expect("open project index"),
-            );
-            opened.push((pid, idx));
-        }
-        if !opened.is_empty() {
-            let mut indices = self.indices.write();
-            for (pid, idx) in opened {
-                indices.entry(pid).or_insert(idx);
+        std::fs::create_dir_all(&data_dir).ok();
+        for (pid, dim, bw) in rows {
+            let file_path = data_dir.join(format!("{pid}.tvim"));
+            if !file_path.exists() {
+                let idx = ProjectIndex::open_or_create(&pid, dim, bw as usize, &data_dir)
+                    .expect("create project index");
+                let _ = idx.flush();
             }
         }
         Ok(())
     }
 
     pub fn get_or_load_index(&self, project_id: &str) -> BiResult<Arc<ProjectIndex>> {
-        if let Some(idx) = self.indices.read().get(project_id).cloned() {
-            return Ok(idx);
+        {
+            let indices = self.indices.read();
+            if let Some(idx) = indices.get(project_id).cloned() {
+                self.index_access_times.lock().insert(project_id.to_string(), Instant::now());
+                return Ok(idx);
+            }
         }
         // Open the one missing file directly without scanning the projects table.
         let conn = self.db.conn()?;
@@ -154,10 +160,81 @@ impl AppState {
             bw,
             &self.data_dir.join("indices"),
         )?);
-        self.indices
-            .write()
-            .insert(project_id.to_string(), idx.clone());
+        {
+            let mut indices = self.indices.write();
+            indices.insert(project_id.to_string(), idx.clone());
+            self.index_access_times.lock().insert(project_id.to_string(), Instant::now());
+        }
+        let _ = self.evict_if_over_budget();
         Ok(idx)
+    }
+
+    /// Approximate in-memory bytes of currently loaded indices.
+    /// Uses the on-disk .tvim file size as a proxy (turbovec loads the
+    /// full quantized data, so the sizes are close).
+    fn loaded_index_bytes(&self) -> u64 {
+        let indices = self.indices.read();
+        let data_dir = self.data_dir.join("indices");
+        let mut total = 0u64;
+        for pid in indices.keys() {
+            let path = data_dir.join(format!("{pid}.tvim"));
+            if let Ok(m) = std::fs::metadata(&path) {
+                total += m.len();
+            }
+        }
+        total
+    }
+
+    /// Evict least-recently-used indices until the loaded set is under budget.
+    fn evict_if_over_budget(&self) -> BiResult<()> {
+        loop {
+            let budget = self.index_memory_budget;
+            let used = self.loaded_index_bytes();
+            if used <= budget {
+                break;
+            }
+            let lru_pid = {
+                let times = self.index_access_times.lock();
+                let mut candidates: Vec<(String, Instant)> = times
+                    .iter()
+                    .map(|(k, v)| (k.clone(), *v))
+                    .collect();
+                candidates.sort_by(|a, b| a.1.cmp(&b.1));
+                candidates.into_iter().map(|(k, _)| k).next()
+            };
+            if let Some(pid) = lru_pid {
+                let mut indices = self.indices.write();
+                indices.remove(&pid);
+                self.index_access_times.lock().remove(&pid);
+                tracing::info!("evicted index '{}' to stay under {} MiB budget", pid, budget / 1024 / 1024);
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Evict indices that haven't been touched in `max_age`.
+    fn evict_stale_indices(&self, max_age: Duration) -> BiResult<()> {
+        let now = Instant::now();
+        let to_evict: Vec<String> = {
+            let times = self.index_access_times.lock();
+            times
+                .iter()
+                .filter(|(_, &t)| now.duration_since(t) > max_age)
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        if !to_evict.is_empty() {
+            let mut indices = self.indices.write();
+            let mut times = self.index_access_times.lock();
+            for pid in to_evict {
+                indices.remove(&pid);
+                times.remove(&pid);
+                tracing::info!("evicted stale index '{}'", pid);
+            }
+        }
+        Ok(())
     }
 
     /// Total bytes on disk for project index files. Cached for 5s.

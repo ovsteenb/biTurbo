@@ -1,16 +1,27 @@
 use crate::error::{BiError, BiResult};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use lru::LruCache;
+use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use rayon::prelude::*;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Global thread pool capped at 2 threads so embedding doesn't freeze the laptop.
+/// Created once on first use; all bulk embedding goes through this pool.
+static EMBED_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .thread_name(|i| format!("biturbo-embed-{i}"))
+            .build()
+            .expect("embed thread pool")
+    });
+
 pub const DEFAULT_DIM: usize = 384;
 pub const DEFAULT_MODEL: &str = "BGE-small-en-v1.5";
 const QUERY_CACHE_CAP: usize = 256;
-const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
+const IDLE_RELEASE: Duration = Duration::from_secs(2 * 60);
 /// Explicit batch size for uncached bulk embeddings. Bounded to keep ONNX
 /// arena memory low (32 texts × 512 tokens ≈ few hundred MB vs multi-GB).
 const EMBED_BATCH: usize = 32;
@@ -111,7 +122,7 @@ impl Embedder {
     /// Uncached bulk embedding for large batches (e.g., project ingest).
     /// Skips the LRU cache to avoid pollution and uses an explicit small batch
     /// size to bound ONNX arena memory. Processes in chunks of EMBED_BATCH.
-    /// Sub-batches are processed in parallel using rayon to utilize all cores.
+    /// Limited to 2 threads so the laptop stays responsive during long ingests.
     pub fn embed_batch_uncached(&self, texts: &[&str]) -> BiResult<Vec<Vec<f32>>> {
         self.ensure_model()?;
         let guard = self.model.read();
@@ -120,15 +131,19 @@ impl Embedder {
             .ok_or_else(|| BiError::Embed("model released mid-embed".into()))?;
 
         let model_ref = &*model;
-        let all_results: Vec<Vec<Vec<f32>>> = texts
-            .par_chunks(EMBED_BATCH)
-            .map(|chunk: &[&str]| {
-                let results = model_ref
-                    .embed(chunk.to_vec(), Some(EMBED_BATCH))
-                    .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
-                Ok(results)
-            })
-            .collect::<Result<Vec<_>, BiError>>()?;
+
+        // Run through the capped thread pool so the laptop stays responsive.
+        let all_results: Vec<Vec<Vec<f32>>> = EMBED_POOL.install(|| {
+            texts
+                .par_chunks(EMBED_BATCH)
+                .map(|chunk: &[&str]| {
+                    let results = model_ref
+                        .embed(chunk.to_vec(), Some(EMBED_BATCH))
+                        .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
+                    Ok(results)
+                })
+                .collect::<Result<Vec<_>, BiError>>()
+        })?;
 
         drop(guard);
 
@@ -175,11 +190,6 @@ fn resolve_model(name: &str) -> BiResult<(EmbeddingModel, &'static str, usize)> 
 }
 
 fn load_model(model_enum: EmbeddingModel) -> BiResult<TextEmbedding> {
-    // Force CPU-only execution — disable CoreML/Metal GPU to prevent
-    // high GPU usage and thermal throttling on Apple Silicon.
-    std::env::set_var("ORT_DISABLE_CORE_ML", "1");
-    std::env::set_var("ORT_DNNL_DISABLE", "1");
-
     let opts = InitOptions::new(model_enum)
         .with_show_download_progress(false)
         .with_cache_dir(
