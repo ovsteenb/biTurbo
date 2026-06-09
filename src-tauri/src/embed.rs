@@ -137,14 +137,15 @@ impl Embedder {
     }
 
     pub fn release_if_idle(&self) {
-        let mut last = self.last_used.lock();
+        let last = self.last_used.lock();
         if last.elapsed() < IDLE_RELEASE {
             return;
         }
+        drop(last);
         if self.model.lock().is_some() {
             *self.model.lock() = None;
         }
-        *last = Instant::now();
+        *self.last_used.lock() = Instant::now();
     }
 
     pub fn cache_len(&self) -> usize {

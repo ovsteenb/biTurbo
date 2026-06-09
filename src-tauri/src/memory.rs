@@ -1,4 +1,4 @@
-use crate::db::{self, log_activity};
+use crate::db::log_activity;
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -243,7 +243,7 @@ pub fn search(
     let fts_query = sanitize_fts_query(query);
     if !fts_query.is_empty() {
         let kk_i64 = kk as i64;
-        let mut stmt = if let Some(t) = mem_type {
+        let mut stmt = if let Some(_t) = mem_type {
             conn.prepare(
                 "SELECT uid, bm25(memories_fts) FROM memories_fts
                  WHERE memories_fts MATCH ?1 AND mem_type = ?2 AND project_id = ?3

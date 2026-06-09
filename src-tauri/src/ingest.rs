@@ -1,6 +1,5 @@
 use crate::db::{self, log_activity};
 use crate::error::{BiError, BiResult};
-use crate::index_engine::ProjectIndex;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};

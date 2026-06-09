@@ -138,13 +138,6 @@ export interface BootstrapPayload {
   consolidate: ConsolidateStatus;
 }
 
-export interface ConsolidateReport {
-  decayed: number;
-  duplicates_found: number;
-  merged: number;
-  removed: number;
-}
-
 export interface GraphNode {
   uid: string;
   label: string;

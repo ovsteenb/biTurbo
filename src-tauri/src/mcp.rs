@@ -44,6 +44,7 @@ pub async fn run_mcp_server_stdio() -> anyhow::Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
+    #[allow(dead_code)]
     jsonrpc: String,
     id: Option<Value>,
     method: String,

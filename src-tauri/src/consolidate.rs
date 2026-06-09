@@ -126,13 +126,15 @@ fn find_duplicates(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(
     let mut dupes = Vec::new();
     for pid in project_ids {
         let mems: Vec<Memory> = memory::list(state, Some(&pid), None, 5000, 0)?;
+        // Build a uid→imp map and uid→Memory map for O(1) lookup during dedup.
+        let by_uid: std::collections::HashMap<&str, &Memory> = mems.iter().map(|m| (m.uid.as_str(), m)).collect();
         for a in &mems {
             let hits = state.embed_and_search(&pid, &a.content, 5, None)?;
             for h in hits {
                 if h.score < 0.95 || h.uid == a.uid {
                     continue;
                 }
-                if let Some(b) = mems.iter().find(|m| m.uid == h.uid) {
+                if let Some(b) = by_uid.get(h.uid.as_str()) {
                     let (keep, drop_) = if a.importance >= b.importance {
                         (a.uid.clone(), b.uid.clone())
                     } else {

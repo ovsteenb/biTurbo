@@ -1,7 +1,7 @@
 //! Multi-project isolation. Each project gets its own turbovec index and a row in
 //! the projects table. The "default" project is auto-created on first run.
 
-use crate::db::{self, log_activity};
+use crate::db::log_activity;
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};

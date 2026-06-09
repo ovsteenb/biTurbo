@@ -8,7 +8,7 @@
 //! activity  — append-only audit log of writes/reads
 //! code_index — tree-sitter chunks per project (file:range → memory)
 
-use crate::error::{BiError, BiResult};
+use crate::error::BiResult;
 use parking_lot::Mutex;
 use r2d2::Pool;
 use std::sync::Arc;

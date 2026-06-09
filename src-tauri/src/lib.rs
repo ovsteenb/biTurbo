@@ -5,7 +5,7 @@
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │  Tauri 2 desktop app  (this crate)                          │
 //! │   ├── commands::*        — IPC handlers (GUI ↔ backend)     │
-//! │   ├── mcp_server         — MCP stdio server for AI agents   │
+//! │   ├── mcp                 — MCP stdio server for AI agents   │
 //! │   ├── memory             — CRUD over memory entries         │
 //! │   ├── project            — multi-project isolation          │
 //! │   ├── index_engine       — turbovec IdMapIndex wrapper      │
