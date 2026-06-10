@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImportResult {
@@ -29,7 +29,7 @@ pub fn import_folder(state: &AppState, project_id: &str, root: &Path) -> BiResul
         .standard_filters(true)
         .git_ignore(true)
         .git_global(true)
-        .hidden(true)
+        .hidden(false)
         .build()
         .filter_map(|r| r.ok())
         .filter(|e| e.path().is_file())
@@ -180,9 +180,24 @@ pub struct WatchStatus {
     pub watching: Vec<String>,
 }
 
+struct WatchState {
+    running: bool,
+    queued: bool,
+}
+
+impl Default for WatchState {
+    fn default() -> Self {
+        Self {
+            running: false,
+            queued: false,
+        }
+    }
+}
+
 type WatchHandle = Arc<Mutex<Option<notify::RecommendedWatcher>>>;
+type WatchJobState = Arc<Mutex<WatchState>>;
 static WATCHERS: once_cell::sync::Lazy<
-    parking_lot::RwLock<std::collections::HashMap<String, WatchHandle>>,
+    parking_lot::RwLock<std::collections::HashMap<String, (WatchHandle, WatchJobState)>>,
 > = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
 
 pub fn enable_watch(state: &AppState, project_id: &str, root: &Path) -> BiResult<()> {
@@ -216,8 +231,8 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
     let project_id_owned = project_id.to_string();
     let root_owned = root.to_path_buf();
     let state_for_cb: Arc<AppState> = Arc::new(state.clone());
-    let last_ingest: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-    let last_ingest_for_cb = last_ingest.clone();
+    let job_state: WatchJobState = Arc::new(Mutex::new(WatchState::default()));
+    let job_state_for_cb = job_state.clone();
 
     let pid_for_event = project_id_owned.clone();
     let root_for_event = root_owned.clone();
@@ -234,20 +249,32 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
                 ) {
                     return;
                 }
-                let mut guard = last_ingest_for_cb.lock();
-                if let Some(t) = *guard {
-                    if t.elapsed() < Duration::from_secs(15) {
-                        return;
-                    }
+
+                let mut state = job_state_for_cb.lock();
+                if state.running {
+                    state.queued = true;
+                    return;
                 }
-                *guard = Some(Instant::now());
-                drop(guard);
+                state.running = true;
+                drop(state);
+
                 let state_clone = state_for_event.clone();
                 let pid = pid_for_event.clone();
                 let root = root_for_event.clone();
+                let job_state_for_task = job_state_for_cb.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     let _ = ingest::ingest_project(&state_clone, &pid, &root);
+                    let mut state = job_state_for_task.lock();
+                    state.running = false;
+                    if state.queued {
+                        state.queued = false;
+                        state.running = true;
+                        drop(state);
+                        let _ = ingest::ingest_project(&state_clone, &pid, &root);
+                        let mut state = job_state_for_task.lock();
+                        state.running = false;
+                    }
                 });
             }
             Err(_) => {}
@@ -258,9 +285,10 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
 
     use notify::Watcher;
     let _ = watcher.watch(root, notify::RecursiveMode::Recursive);
-    WATCHERS
-        .write()
-        .insert(project_id_owned, Arc::new(Mutex::new(Some(watcher))));
+    WATCHERS.write().insert(
+        project_id_owned,
+        (Arc::new(Mutex::new(Some(watcher))), job_state),
+    );
 }
 
 pub fn resume_watches(state: &AppState) {

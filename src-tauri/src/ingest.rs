@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use streaming_iterator::StreamingIterator;
@@ -15,12 +16,8 @@ use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 const CHUNK_INSERT_BATCH: usize = 64;
 const INDEX_BATCH: usize = 64;
-const EMBED_BATCH: usize = 32;
 const PROGRESS_EVERY: usize = 16;
 const MAX_CHUNK_TEXT: usize = 4000;
-/// Wave size is intentionally equal to the DB write batch size; embedding now
-/// streams smaller ONNX batches internally, so this only bounds pending chunk
-/// work and progress reporting.
 
 /// Capped thread pool for parallel file parsing. Tree-sitter parse trees are
 /// 10–30× the size of source files, so running on all cores concurrently can
@@ -92,6 +89,7 @@ pub struct GraphEdge {
     pub weight: f32,
 }
 
+#[derive(Clone)]
 struct PendingChunk {
     uid: String,
     code: String,
@@ -102,7 +100,32 @@ struct PendingChunk {
     file_uid: String,
 }
 
+impl PendingChunk {
+    fn embed_text(&self) -> String {
+        let mut text = format!(
+            "```{}\n// {}:{}-{}\n{}```\n{}",
+            self.language, self.file_path, self.start_line, self.end_line, self.code, self.language,
+        );
+        if text.len() > MAX_CHUNK_TEXT {
+            text = text.chars().take(MAX_CHUNK_TEXT).collect();
+        }
+        text
+    }
+
+    fn db_content(&self) -> String {
+        let mut text = format!(
+            "// {}:{}-{}\n{}",
+            self.file_path, self.start_line, self.end_line, self.code,
+        );
+        if text.len() > MAX_CHUNK_TEXT {
+            text = text.chars().take(MAX_CHUNK_TEXT).collect();
+        }
+        text
+    }
+}
+
 /// Per-file output of the parallel parse phase.
+#[derive(Clone)]
 struct ParsedFile {
     rel: String,
     file_uid: String,
@@ -141,7 +164,6 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
 
     let conn = state.db.conn()?;
     let existing_files = db::get_indexed_files(&conn, project_id)?;
-    let mut file_hashes: HashMap<String, String> = HashMap::new();
     drop(conn);
 
     let mut by_basename: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
@@ -177,19 +199,9 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         )?;
     }
 
-    let now = chrono::Utc::now().timestamp_millis();
-    state.db.write(|tx| {
-        tx.execute(
-            "DELETE FROM code_edges WHERE project_id = ?1",
-            rusqlite::params![project_id],
-        )?;
-        Ok(())
-    })?;
-
     let total = files.len().max(1);
 
-    // ---- PARALLEL: read + parse + chunk every file (capped pool so
-    // tree-sitter trees don't blow RAM). Each file parsed exactly once.
+    // ---- INCREMENTAL: read/hash every file, but parse only changed files.
     let progress = AtomicUsize::new(0);
     let parsed: Vec<ParsedFile> = PARSE_POOL.install(|| {
         files
@@ -207,70 +219,133 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
                         0,
                     );
                 }
-                parse_one_file(project_id, root, path)
+                parse_one_file(project_id, root, path, &existing_files)
             })
             .collect()
     });
 
-    // ---- Sequential assembly: stable ordering, edge resolution against the
-    // full file set (so forward references resolve too).
+    let idx = state.get_or_load_index(project_id)?;
+    let mut current_rels: HashSet<String> = HashSet::new();
     let mut file_uids: BTreeMap<String, String> = BTreeMap::new();
-    for pf in &parsed {
-        if pf.error.is_none() {
-            file_uids.insert(pf.rel.clone(), pf.file_uid.clone());
-        }
-    }
-
-    let mut pending_chunks: Vec<PendingChunk> = Vec::new();
+    let mut pending_chunks: Vec<&PendingChunk> = Vec::new();
     let mut pending_edges: Vec<(String, String, String, f32)> = Vec::new();
+    let mut edge_keys: HashSet<String> = HashSet::new();
+    let mut import_sources: HashMap<String, Vec<String>> = HashMap::new();
+    let mut changed_rels: Vec<String> = Vec::new();
+    let mut changed_file_uids: Vec<String> = Vec::new();
+    let mut stale_file_uids: Vec<String> = Vec::new();
+    let mut deleted_file_uids: Vec<String> = Vec::new();
+    let mut changed_pfs: Vec<ParsedFile> = Vec::new();
+    let mut parse_error_rels: Vec<String> = Vec::new();
+
     for pf in parsed {
+        current_rels.insert(pf.rel.clone());
         result.bytes_processed += pf.bytes;
-        if let Some(e) = pf.error {
-            result.errors.push(e);
+
+        if let Some(e) = &pf.error {
+            result.errors.push(e.clone());
+            parse_error_rels.push(pf.rel.clone());
+            stale_file_uids.push(pf.file_uid.clone());
+            changed_file_uids.push(pf.file_uid.clone());
+            changed_pfs.push(pf);
             continue;
         }
+
         result.files_indexed += 1;
         *result.languages.entry(pf.lang.to_string()).or_insert(0) += 1;
-        let abs = root.join(&pf.rel);
-        for imp in &pf.imports {
-            if let Some(target_rel) = resolve_import(imp, &abs, root, &by_basename) {
-                if target_rel == pf.rel {
-                    continue;
-                }
-                if let Some(target_file_uid) = file_uids.get(&target_rel) {
-                    pending_edges.push((
-                        pf.file_uid.clone(),
-                        target_file_uid.clone(),
-                        "imports".into(),
-                        1.0,
-                    ));
+        file_uids.insert(pf.rel.clone(), pf.file_uid.clone());
+
+        let unchanged = existing_files
+            .get(&pf.rel)
+            .is_some_and(|existing| existing.file_hash == pf.file_hash);
+        let imports_for_edges = if unchanged {
+            existing_files
+                .get(&pf.rel)
+                .map(|e| e.imports.clone())
+                .unwrap_or_default()
+        } else {
+            pf.imports.clone()
+        };
+        for imp in &imports_for_edges {
+            if let Some(target_rel) = resolve_import(imp, &root.join(&pf.rel), root, &by_basename) {
+                if target_rel != pf.rel {
+                    let sources = import_sources.entry(target_rel).or_default();
+                    if !sources.contains(&pf.file_uid) {
+                        sources.push(pf.file_uid.clone());
+                    }
                 }
             }
         }
-        result.chunks_indexed += pf.chunks.len();
-        pending_chunks.extend(pf.chunks);
+
+        if unchanged {
+            continue;
+        }
+
+        changed_rels.push(pf.rel.clone());
+        changed_file_uids.push(pf.file_uid.clone());
+        changed_pfs.push(pf);
     }
 
-    // ---- STREAMED: embed in waves to bound memory and emit progress ----
-    let idx = state.get_or_load_index(project_id)?;
+    for rel in existing_files.keys() {
+        if !current_rels.contains(rel) {
+            deleted_file_uids.push(format!("{project_id}::file::{rel}"));
+        }
+    }
+
+    let conn = state.db.conn()?;
+    let mut stale_uids = Vec::new();
+    for rel in changed_rels.iter().chain(parse_error_rels.iter()) {
+        stale_uids.extend(db::code_uids_for_file(&conn, project_id, rel)?);
+    }
+    for rel in existing_files
+        .keys()
+        .filter(|rel| !current_rels.contains(*rel))
+    {
+        stale_uids.extend(db::code_uids_for_file(&conn, project_id, rel)?);
+    }
+    drop(conn);
+
+    pending_chunks.extend(changed_pfs.iter().flat_map(|pf| pf.chunks.iter()));
+
+    for uid in &stale_uids {
+        let _ = idx.remove(uid);
+    }
+
+    // ---- STREAMED: embed changed chunks in small ONNX batches and write the
+    // vector index in small batches so peak RAM stays bounded.
     let total_chunks = pending_chunks.len();
     let mut embedded_so_far = 0;
 
-    for wave in pending_chunks.chunks(EMBED_WAVE) {
-        let embed_texts: Vec<&str> = wave.iter().map(|c| c.content_for_embed.as_str()).collect();
-        let embeddings = state.embedder.embed_batch_uncached(&embed_texts)?;
+    for wave in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
+        let embed_texts: Vec<String> = wave.iter().map(|c| c.embed_text()).collect();
+        let embed_refs: Vec<&str> = embed_texts.iter().map(String::as_str).collect();
+        let mut wave_offset = 0usize;
+        let mut index_items: Vec<(String, Vec<f32>)> = Vec::with_capacity(INDEX_BATCH);
 
-        // Add to index immediately, drop embeddings after
-        let index_items: Vec<(String, Vec<f32>)> = wave
-            .iter()
-            .zip(embeddings)
-            .map(|(c, emb)| (c.uid.clone(), emb))
-            .collect();
-        idx.add_batch(&index_items)?;
+        state
+            .embedder
+            .embed_batch_uncached_stream(&embed_refs, |chunk_texts, embeddings| {
+                for (i, emb) in embeddings.into_iter().enumerate() {
+                    let c = &wave[wave_offset + i];
+                    index_items.push((c.uid.clone(), emb));
+                    if index_items.len() >= INDEX_BATCH {
+                        idx.add_batch(&index_items)?;
+                        index_items.clear();
+                    }
+                }
+                wave_offset += chunk_texts.len();
+                Ok(())
+            })?;
 
-        // Add member_of edges for this wave
+        if !index_items.is_empty() {
+            idx.add_batch(&index_items)?;
+        }
+
         for c in wave {
-            pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
+            let key = format!("{}\0{}\0member_of", c.uid, c.file_uid);
+            if edge_keys.insert(key) {
+                pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
+            }
         }
 
         embedded_so_far += wave.len();
@@ -286,8 +361,8 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     }
     let _ = idx.flush();
 
-    // ---- SQLite: all chunk inserts in ONE transaction (multi-row statements
-    // of CHUNK_INSERT_BATCH rows to stay under the bind-variable limit) ----
+    // ---- SQLite: delete stale chunks for changed/deleted files, insert new
+    // chunks, rebuild changed file edges, and update indexed_files metadata.
     emit_progress(
         state,
         project_id,
@@ -297,11 +372,84 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         None,
         result.chunks_indexed,
     );
+
+    drop(pending_chunks);
+
+    let mut valid_changed_pfs: Vec<ParsedFile> = Vec::new();
+    for pf in &changed_pfs {
+        if pf.error.is_none() {
+            valid_changed_pfs.push(pf.clone());
+        }
+    }
+
+    for pf in &changed_pfs {
+        result.chunks_indexed += pf.chunks.len();
+    }
+
+    for pf in &valid_changed_pfs {
+        let abs = root.join(&pf.rel);
+        for imp in &pf.imports {
+            if let Some(target_rel) = resolve_import(imp, &abs, root, &by_basename) {
+                if target_rel == pf.rel {
+                    continue;
+                }
+                if let Some(target_file_uid) = file_uids.get(&target_rel) {
+                    let key = format!("{}\0{}\0imports", pf.file_uid, target_file_uid);
+                    if edge_keys.insert(key) {
+                        pending_edges.push((
+                            pf.file_uid.clone(),
+                            target_file_uid.clone(),
+                            "imports".into(),
+                            1.0,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    for rel in &changed_rels {
+        if let Some(target_file_uid) = file_uids.get(rel) {
+            if let Some(sources) = import_sources.get(rel) {
+                for source_uid in sources {
+                    if source_uid == target_file_uid {
+                        continue;
+                    }
+                    let key = format!("{}\0{}\0imports", source_uid, target_file_uid);
+                    if edge_keys.insert(key) {
+                        pending_edges.push((
+                            source_uid.clone(),
+                            target_file_uid.clone(),
+                            "imports".into(),
+                            1.0,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     state.db.write(|tx| {
         let now = chrono::Utc::now().timestamp_millis();
-        for batch in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
-            let n = batch.len();
-            let placeholders = vec!["(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"; n].join(",");
+        db::delete_memories_by_uids(tx, &stale_uids)?;
+        db::delete_code_edges_for_files(tx, project_id, &changed_file_uids)?;
+        db::delete_code_edges_for_files(tx, project_id, &stale_file_uids)?;
+        db::delete_code_edges_for_files(tx, project_id, &deleted_file_uids)?;
+
+        for rel in existing_files
+            .keys()
+            .filter(|rel| !current_rels.contains(*rel))
+            .chain(parse_error_rels.iter())
+        {
+            db::delete_indexed_file(tx, project_id, rel)?;
+        }
+
+        for batch in valid_changed_pfs.chunks(CHUNK_INSERT_BATCH) {
+            let total_chunks: usize = batch.iter().map(|pf| pf.chunks.len()).sum();
+            if total_chunks == 0 {
+                continue;
+            }
+            let placeholders = vec!["(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"; total_chunks].join(",");
             let sql = format!(
                 "INSERT OR REPLACE INTO memories
                    (uid, project_id, mem_type, content, importance,
@@ -310,42 +458,42 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
                  VALUES {placeholders}"
             );
             let mut stmt = tx.prepare_cached(&sql)?;
-            let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(n * 15);
-            for c in batch {
-                params.push(c.uid.clone().into());
-                params.push(project_id.to_string().into());
-                params.push("code".to_string().into());
-                params.push(c.db_content.clone().into());
-                params.push(0.5_f64.into());
-                params.push(now.into());
-                params.push(now.into());
-                params.push(now.into());
-                params.push(0_i64.into());
-                params.push(c.file_path.clone().into());
-                params.push(c.start_line.into());
-                params.push(c.end_line.into());
-                params.push(c.language.clone().into());
-                params.push("[]".to_string().into());
-                params.push(rusqlite::types::Value::Null);
+            let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(total_chunks * 15);
+            for pf in batch {
+                for c in &pf.chunks {
+                    params.push(c.uid.clone().into());
+                    params.push(project_id.to_string().into());
+                    params.push("code".to_string().into());
+                    params.push(c.db_content().into());
+                    params.push(0.5_f64.into());
+                    params.push(now.into());
+                    params.push(now.into());
+                    params.push(now.into());
+                    params.push(0_i64.into());
+                    params.push(c.file_path.clone().into());
+                    params.push(c.start_line.into());
+                    params.push(c.end_line.into());
+                    params.push(c.language.clone().into());
+                    params.push("[]".to_string().into());
+                    params.push(rusqlite::types::Value::Null);
+                }
             }
             stmt.execute(rusqlite::params_from_iter(params))?;
         }
-        Ok(())
-    })?;
 
-    // ---- SQLite: all edges in ONE transaction, batched the same way ----
-    if !pending_edges.is_empty() {
-        emit_progress(
-            state,
-            project_id,
-            "edges",
-            total,
-            total,
-            None,
-            result.chunks_indexed,
-        );
-        let now = chrono::Utc::now().timestamp_millis();
-        state.db.write(|tx| {
+        for pf in &valid_changed_pfs {
+            db::upsert_indexed_file(
+                tx,
+                project_id,
+                &pf.rel,
+                &pf.file_hash,
+                pf.lang,
+                &pf.imports,
+                now,
+            )?;
+        }
+
+        if !pending_edges.is_empty() {
             for batch in pending_edges.chunks(512) {
                 let n = batch.len();
                 let placeholders = vec!["(?,?,?,?,?,?)"; n].join(",");
@@ -364,12 +512,16 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
                 }
                 stmt.execute(rusqlite::params_from_iter(params))?;
             }
-            result.edges_created = pending_edges.len();
-            Ok(())
-        })?;
-    }
+        }
 
-    state.db.write(|tx| {
+        let total_code_chunks: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND mem_type = 'code'",
+            rusqlite::params![project_id],
+            |r| r.get(0),
+        )?;
+        result.chunks_indexed = total_code_chunks as usize;
+        result.edges_created = pending_edges.len();
+
         tx.execute(
             "UPDATE projects SET indexed_count = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![result.chunks_indexed as i64, now, project_id],
@@ -384,6 +536,8 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
                 "files": result.files_indexed,
                 "chunks": result.chunks_indexed,
                 "edges": result.edges_created,
+                "changed_files": changed_rels.len(),
+                "deleted_files": existing_files.keys().filter(|rel| !current_rels.contains(*rel)).count(),
             })),
         )?;
         Ok(())
@@ -394,21 +548,21 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     Ok(result)
 }
 
-/// Ingest multiple projects in parallel. Each project is processed concurrently
-/// using rayon. The embedder and database are thread-safe, so this is safe.
+/// Ingest multiple projects sequentially. Per-project parsing still uses a
+/// capped Rayon pool, but project-level parallelism causes ONNX/CPU contention
+/// and large memory spikes.
 /// Progress events include project_id to distinguish which project is being processed.
 pub fn ingest_multiple_projects(
     state: &AppState,
     projects: Vec<(String, PathBuf)>,
 ) -> BiResult<MultiIngestResult> {
-    let results: Vec<Result<IngestResult, BiError>> = projects
-        .par_iter()
-        .map(|(project_id, root)| {
-            ingest_project(state, project_id, root).map_err(|e| {
-                BiError::Ingest(format!("project {} failed: {}", project_id, e))
-            })
-        })
-        .collect();
+    let mut results = Vec::with_capacity(projects.len());
+    for (project_id, root) in projects {
+        results.push(
+            ingest_project(state, &project_id, &root)
+                .map_err(|e| BiError::Ingest(format!("project {project_id} failed: {e}"))),
+        );
+    }
 
     let mut multi_result = MultiIngestResult::default();
     for result in results {
@@ -443,7 +597,11 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
     let mut edges: Vec<GraphEdge> = Vec::new();
 
     let mut stmt = conn.prepare(
-        "SELECT uid, content, file_path, start_line, end_line, language
+        "SELECT uid,
+                CASE WHEN instr(content, char(10)) > 0
+                     THEN substr(content, 1, instr(content, char(10)) - 1)
+                     ELSE content END AS first_line,
+                file_path, start_line, end_line, language
          FROM memories
          WHERE project_id = ?1 AND mem_type = 'code'
          ORDER BY file_path, start_line",
@@ -498,7 +656,8 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
 
         for m in members {
             let label = derive_label(&m.1);
-            let kind = if m.1.contains("class") || m.1.contains("Class") {
+            let content_hint = &m.1;
+            let kind = if content_hint.contains("class") || content_hint.contains("Class") {
                 "class"
             } else if m.1.contains("struct") || m.1.contains("Struct") {
                 "struct"
@@ -541,15 +700,24 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
     })
 }
 
-fn derive_label(content: &str) -> String {
-    content
-        .lines()
-        .map(|l| l.trim())
-        .find(|l| {
-            !l.is_empty() && !l.starts_with("//") && !l.starts_with("#") && !l.starts_with("/*")
-        })
-        .map(|l| l.chars().take(60).collect())
-        .unwrap_or_else(|| "(anon)".into())
+fn derive_label(content_hint: &str) -> String {
+    let trimmed = content_hint.trim();
+    if trimmed.is_empty() {
+        return "(anon)".to_string();
+    }
+    let first = trimmed.lines().next().unwrap_or(trimmed);
+    // Remove common comment prefixes so the label looks cleaner
+    let cleaned = first
+        .trim_start_matches("//")
+        .trim_start_matches("#")
+        .trim_start_matches("/*")
+        .trim_start_matches("*")
+        .trim_start_matches("/**")
+        .trim();
+    if cleaned.is_empty() {
+        return first.chars().take(60).collect();
+    }
+    cleaned.chars().take(60).collect()
 }
 
 fn detect_language(p: &Path) -> Option<&'static str> {
@@ -643,7 +811,12 @@ static LANG_BUNDLES: Lazy<HashMap<&'static str, LangBundle>> = Lazy::new(|| {
 });
 
 /// Read, parse (once), and chunk a single file. Runs on a rayon worker.
-fn parse_one_file(project_id: &str, root: &Path, path: &Path) -> ParsedFile {
+fn parse_one_file(
+    project_id: &str,
+    root: &Path,
+    path: &Path,
+    existing_files: &HashMap<String, db::IndexedFileInfo>,
+) -> ParsedFile {
     let rel = path
         .strip_prefix(root)
         .unwrap_or(path)
@@ -656,15 +829,40 @@ fn parse_one_file(project_id: &str, root: &Path, path: &Path) -> ParsedFile {
         file_uid: file_uid.clone(),
         lang,
         bytes: 0,
+        file_hash: String::new(),
         chunks: Vec::new(),
         imports: Vec::new(),
         error: None,
     };
-    let Ok(source) = std::fs::read_to_string(path) else {
+
+    let mut bytes = Vec::new();
+    if std::fs::File::open(path)
+        .and_then(|mut file| file.read_to_end(&mut bytes))
+        .is_err()
+    {
         pf.error = Some(format!("{}: unreadable", path.display()));
         return pf;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    pf.file_hash = hex::encode(hasher.finalize());
+    pf.bytes = bytes.len() as u64;
+
+    if existing_files
+        .get(&pf.rel)
+        .is_some_and(|existing| existing.file_hash == pf.file_hash)
+    {
+        pf.imports = existing_files
+            .get(&pf.rel)
+            .map(|e| e.imports.clone())
+            .unwrap_or_default();
+        return pf;
+    }
+
+    let Ok(source) = String::from_utf8(bytes) else {
+        pf.error = Some(format!("{}: not utf-8", path.display()));
+        return pf;
     };
-    pf.bytes = source.len() as u64;
 
     let Some(bundle) = LANG_BUNDLES.get(lang) else {
         pf.error = Some(format!("{}: no grammar for {lang}", path.display()));
@@ -686,25 +884,9 @@ fn parse_one_file(project_id: &str, root: &Path, path: &Path) -> ParsedFile {
     let file_path_str = path.to_string_lossy().to_string();
     for chunk in chunks {
         let uid = format!("{project_id}::{}::{}", pf.rel, chunk.start_line);
-        let embed_text = format!(
-            "```{lang}\n// {}:{}-{}\n{}```\n{}",
-            file_name, chunk.start_line, chunk.end_line, chunk.code, chunk.kind,
-        );
-        // Pre-truncate to ~4000 chars (model truncates at 512 tokens anyway)
-        // This saves tokenization time on huge chunks with no quality loss
-        let embed_text = if embed_text.len() > 4000 {
-            embed_text.chars().take(4000).collect()
-        } else {
-            embed_text
-        };
-        let db_content = format!(
-            "// {}:{}-{}\n{}",
-            file_name, chunk.start_line, chunk.end_line, chunk.code,
-        );
         pf.chunks.push(PendingChunk {
             uid,
-            content_for_embed: embed_text,
-            db_content,
+            code: chunk.code,
             file_path: file_path_str.clone(),
             start_line: chunk.start_line as i64,
             end_line: chunk.end_line as i64,
@@ -714,12 +896,12 @@ fn parse_one_file(project_id: &str, root: &Path, path: &Path) -> ParsedFile {
     }
 
     pf.imports = collect_imports(bundle, root_node, &source);
+    let _ = file_name;
     pf
 }
 
 #[derive(Debug, Clone)]
 struct Chunk {
-    kind: String,
     code: String,
     start_line: usize,
     end_line: usize,
@@ -878,9 +1060,8 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
                     .min(start + 200)
                     .min(lines.len() - 1);
                 let code = lines[start..=end].join("\n");
-                let kind = node.kind().replace('_', " ");
+                let _kind = node.kind().replace('_', " ");
                 chunks.push(Chunk {
-                    kind,
                     code,
                     start_line: start + 1,
                     end_line: end + 1,
@@ -892,7 +1073,6 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
     if chunks.is_empty() {
         let cap = (lines.len() - 1).min(200);
         chunks.push(Chunk {
-            kind: "file".into(),
             code: lines[..=cap].join("\n"),
             start_line: 1,
             end_line: cap + 1,
@@ -1138,14 +1318,14 @@ mod tests {
         )
         .unwrap();
 
-        let pf = parse_one_file("proj", &dir, &file);
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
         assert!(pf.error.is_none(), "error: {:?}", pf.error);
         assert_eq!(pf.lang, "rust");
         assert_eq!(pf.rel, "sample.rs");
         assert_eq!(pf.file_uid, "proj::file::sample.rs");
         // struct + fn definitions become chunks.
         assert!(pf.chunks.len() >= 2, "chunks: {}", pf.chunks.len());
-        assert!(pf.chunks.iter().any(|c| c.db_content.contains("do_it")));
+        assert!(pf.chunks.iter().any(|c| c.db_content().contains("do_it")));
         // The `use` import is collected.
         assert!(!pf.imports.is_empty());
 

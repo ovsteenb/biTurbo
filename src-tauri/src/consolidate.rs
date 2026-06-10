@@ -3,6 +3,7 @@ use crate::error::BiResult;
 use crate::memory::{self, Memory};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConsolidateReport {
@@ -134,41 +135,51 @@ fn find_duplicates(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(
             v
         }
     };
-    let mut dupes = Vec::new();
+    drop(conn);
+
+    let mut dupes: HashSet<(String, String)> = HashSet::new();
     for pid in project_ids {
-        let mems: Vec<Memory> = memory::list(state, Some(&pid), None, 5000, 0)?;
-        if mems.is_empty() {
-            continue;
-        }
-        // Build a uid→imp map and uid→Memory map for O(1) lookup during dedup.
-        let by_uid: std::collections::HashMap<&str, &Memory> =
-            mems.iter().map(|m| (m.uid.as_str(), m)).collect();
-        // Embed every memory in one batched call (one ONNX session pass)
-        // instead of one embed per memory, then run the cheap vector searches
-        // against the precomputed embeddings.
-        let texts: Vec<&str> = mems.iter().map(|m| m.content.as_str()).collect();
-        let embeddings = state.embedder.embed_batch(&texts)?;
+        // Process in batches to bound RAM. Skip code-type memories —
+        // deduplicating code chunks is expensive and rarely useful.
         let idx = state.get_or_load_index(&pid)?;
-        for (a, vec) in mems.iter().zip(&embeddings) {
-            let hits = idx.search(vec, 5, None)?;
-            for h in hits {
-                if h.score < 0.95 || h.uid == a.uid {
-                    continue;
-                }
-                if let Some(b) = by_uid.get(h.uid.as_str()) {
-                    let (keep, drop_) = if a.importance >= b.importance {
-                        (a.uid.clone(), b.uid.clone())
-                    } else {
-                        (b.uid.clone(), a.uid.clone())
-                    };
-                    if !dupes.iter().any(|(k, d)| k == &keep && d == &drop_) {
-                        dupes.push((keep, drop_));
+        let mut offset = 0usize;
+        const BATCH: usize = 1000;
+        loop {
+            let mems: Vec<Memory> = memory::list(state, Some(&pid), None, BATCH, offset)?;
+            if mems.is_empty() {
+                break;
+            }
+            let non_code: Vec<&Memory> = mems.iter().filter(|m| m.mem_type != "code").collect();
+            if !non_code.is_empty() {
+                let by_uid: std::collections::HashMap<&str, &Memory> =
+                    non_code.iter().map(|m| (m.uid.as_str(), *m)).collect();
+                let texts: Vec<&str> = non_code.iter().map(|m| m.content.as_str()).collect();
+                let embeddings = state.embedder.embed_batch(&texts)?;
+                for (i, vec) in embeddings.iter().enumerate() {
+                    let a = non_code[i];
+                    let hits = idx.search(vec, 5, None)?;
+                    for h in hits {
+                        if h.score < 0.95 || h.uid == a.uid {
+                            continue;
+                        }
+                        if let Some(b) = by_uid.get(h.uid.as_str()) {
+                            let (keep, drop_) = if a.importance >= b.importance {
+                                (a.uid.clone(), b.uid.clone())
+                            } else {
+                                (b.uid.clone(), a.uid.clone())
+                            };
+                            dupes.insert((keep, drop_));
+                        }
                     }
                 }
             }
+            offset += BATCH;
+            if mems.len() < BATCH {
+                break;
+            }
         }
     }
-    Ok(dupes)
+    Ok(dupes.into_iter().collect())
 }
 
 fn merge_pair(state: &AppState, keep_uid: &str, drop_uid: &str) -> BiResult<bool> {

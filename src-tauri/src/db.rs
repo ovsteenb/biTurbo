@@ -188,7 +188,8 @@ CREATE TABLE IF NOT EXISTS indexed_files (
     language    TEXT NOT NULL,
     imports_json TEXT NOT NULL DEFAULT '[]',
     indexed_at  INTEGER NOT NULL,
-    PRIMARY KEY(project_id, file_path)
+    PRIMARY KEY(project_id, file_path),
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_indexed_files_project ON indexed_files(project_id);
@@ -282,20 +283,16 @@ pub fn get_indexed_files(
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
-        Ok(IndexedFileInfo {
-            file_hash: r.get::<_, String>(1)?,
-            language: r.get::<_, String>(2)?,
-            imports,
-        })
+        Ok((
+            r.get::<_, String>(0)?,
+            IndexedFileInfo {
+                file_hash: r.get::<_, String>(1)?,
+                language: r.get::<_, String>(2)?,
+                imports,
+            },
+        ))
     })?;
-    let mut out = HashMap::new();
-    for row in rows.filter_map(|r| r.ok()) {
-        let file_path: String = row
-            .file_path
-            .clone();
-        out.insert(file_path, row);
-    }
-    Ok(out)
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 pub fn upsert_indexed_file(
@@ -347,10 +344,7 @@ pub fn code_uids_for_file(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-pub fn delete_memories_by_uids(
-    tx: &rusqlite::Transaction<'_>,
-    uids: &[String],
-) -> BiResult<()> {
+pub fn delete_memories_by_uids(tx: &rusqlite::Transaction<'_>, uids: &[String]) -> BiResult<()> {
     for chunk in uids.chunks(400) {
         let placeholders = std::iter::repeat("?")
             .take(chunk.len())

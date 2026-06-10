@@ -325,7 +325,7 @@ pub fn search(
         placeholders
     );
     let mut stmt = conn.prepare_cached(&select_sql)?;
-    let by_uid: std::collections::HashMap<String, Memory> = stmt
+    let mut by_uid: std::collections::HashMap<String, Memory> = stmt
         .query_map(
             rusqlite::params_from_iter(ranked.iter().map(|(u, _)| u.as_str())),
             row_to_memory,
@@ -340,6 +340,7 @@ pub fn search(
     // single activity row for the whole search (not one per hit).
     let now = chrono::Utc::now().timestamp_millis();
     let hit_uids: Vec<String> = ranked.iter().map(|(u, _)| u.clone()).collect();
+    let top_uids: Vec<String> = hit_uids.iter().take(5).cloned().collect();
     state.db.write(|tx| {
         let update_sql = format!(
             "UPDATE memories SET access_count = access_count + 1, last_access = ? WHERE uid IN ({})",
@@ -359,7 +360,7 @@ pub fn search(
             None,
             "read",
             None,
-            Some(&serde_json::json!({"query": query, "hits": hit_uids})),
+            Some(&serde_json::json!({"query": query, "hits": hit_uids.len(), "top_uids": top_uids})),
         )?;
         Ok(())
     })?;
@@ -368,8 +369,7 @@ pub fn search(
         .into_iter()
         .filter_map(|(uid, score)| {
             by_uid
-                .get(&uid)
-                .cloned()
+                .remove(&uid)
                 .map(|memory| MemoryWithScore { memory, score })
         })
         .collect())

@@ -132,7 +132,8 @@ impl Embedder {
     }
 
     pub fn release_if_idle(&self) {
-        if self.last_used.lock().elapsed() < IDLE_RELEASE {
+        let idle_for = self.last_used.lock().elapsed();
+        if idle_for < IDLE_RELEASE {
             return;
         }
         let _guard = EMBED_LOCK.lock();
