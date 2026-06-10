@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing;
 
 static EMBED_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -124,7 +125,13 @@ impl Embedder {
         for chunk in texts.chunks(EMBED_BATCH) {
             let results = model
                 .embed(chunk.to_vec(), Some(EMBED_BATCH))
-                .map_err(|e| BiError::Embed(format!("embed_batch_uncached: {e}")))?;
+                .map_err(|e| {
+                    tracing::error!(
+                        "embed: ONNX inference failed for {} texts: {e}",
+                        chunk.len()
+                    );
+                    BiError::Embed(format!("embed_batch_uncached: {e}"))
+                })?;
             on_batch(chunk, results)?;
         }
 

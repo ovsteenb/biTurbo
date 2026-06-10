@@ -40,20 +40,41 @@ pub use state::AppState;
 use std::sync::Arc;
 use tauri::Manager;
 use tracing::info;
+use tracing_subscriber::fmt::layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+fn init_logging(data_dir: &std::path::Path) {
+    let log_dir = data_dir.join("logs");
+    std::fs::create_dir_all(&log_dir).ok();
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "biturbo.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    // Leak the guard so the non-blocking writer stays alive for the process lifetime.
+    std::mem::forget(_guard);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "biturbo_lib=info,tauri=info".into());
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            layer()
+                .compact()
+                .with_target(false)
+                .with_writer(std::io::stdout),
+        )
+        .with(
+            layer()
+                .compact()
+                .with_target(true)
+                .with_writer(non_blocking),
+        )
+        .init();
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "biturbo_lib=info,tauri=info".into()),
-        )
-        .with_target(false)
-        .compact()
-        .init();
-
-    info!("biTurbo starting…");
-
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
@@ -64,6 +85,10 @@ pub fn run() {
 
             let data_dir = app.path().app_data_dir().expect("app data dir resolvable");
             std::fs::create_dir_all(&data_dir).ok();
+
+            init_logging(&data_dir);
+
+            info!("biTurbo starting…");
 
             let mut state = AppState::open(&data_dir).expect("open app state");
             state.app = Some(app.handle().clone());

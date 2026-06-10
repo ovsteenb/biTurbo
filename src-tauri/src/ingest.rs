@@ -12,12 +12,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use streaming_iterator::StreamingIterator;
 use tauri::Emitter;
+use tracing;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 const CHUNK_INSERT_BATCH: usize = 64;
 const INDEX_BATCH: usize = 64;
 const PROGRESS_EVERY: usize = 16;
 const MAX_CHUNK_TEXT: usize = 4000;
+/// Group at most this many chunks into one INSERT statement to stay
+/// under SQLite's 32 766 bound-variable limit (15 params per chunk).
+const SQL_INSERT_CHUNK_LIMIT: usize = 2000;
 
 /// Capped thread pool for parallel file parsing. Tree-sitter parse trees are
 /// 10–30× the size of source files, so running on all cores concurrently can
@@ -444,41 +448,28 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
             db::delete_indexed_file(tx, project_id, rel)?;
         }
 
-        for batch in valid_changed_pfs.chunks(CHUNK_INSERT_BATCH) {
-            let total_chunks: usize = batch.iter().map(|pf| pf.chunks.len()).sum();
-            if total_chunks == 0 {
-                continue;
-            }
-            let placeholders = vec!["(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"; total_chunks].join(",");
-            let sql = format!(
-                "INSERT OR REPLACE INTO memories
-                   (uid, project_id, mem_type, content, importance,
-                    created_at, updated_at, last_access, access_count,
-                    file_path, start_line, end_line, language, tags, source_agent)
-                 VALUES {placeholders}"
-            );
-            let mut stmt = tx.prepare_cached(&sql)?;
-            let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(total_chunks * 15);
-            for pf in batch {
-                for c in &pf.chunks {
-                    params.push(c.uid.clone().into());
-                    params.push(project_id.to_string().into());
-                    params.push("code".to_string().into());
-                    params.push(c.db_content().into());
-                    params.push(0.5_f64.into());
-                    params.push(now.into());
-                    params.push(now.into());
-                    params.push(now.into());
-                    params.push(0_i64.into());
-                    params.push(c.file_path.clone().into());
-                    params.push(c.start_line.into());
-                    params.push(c.end_line.into());
-                    params.push(c.language.clone().into());
-                    params.push("[]".to_string().into());
-                    params.push(rusqlite::types::Value::Null);
+        // Batch inserts by cumulative chunk count (not file count) to stay
+        // under SQLite's 32 766 host-parameter limit.
+        {
+            let mut group: Vec<&ParsedFile> = Vec::new();
+            let mut group_chunks: usize = 0;
+            for pf in &valid_changed_pfs {
+                let n = pf.chunks.len();
+                if group_chunks + n > SQL_INSERT_CHUNK_LIMIT && group_chunks > 0 {
+                    flush_chunk_insert(
+                        tx, project_id, &group, group_chunks, now,
+                    )?;
+                    group.clear();
+                    group_chunks = 0;
                 }
+                group.push(pf);
+                group_chunks += n;
             }
-            stmt.execute(rusqlite::params_from_iter(params))?;
+            if group_chunks > 0 {
+                flush_chunk_insert(
+                    tx, project_id, &group, group_chunks, now,
+                )?;
+            }
         }
 
         for pf in &valid_changed_pfs {
@@ -718,6 +709,46 @@ fn derive_label(content_hint: &str) -> String {
         return first.chars().take(60).collect();
     }
     cleaned.chars().take(60).collect()
+}
+
+fn flush_chunk_insert(
+    tx: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    batch: &[&ParsedFile],
+    total_chunks: usize,
+    now: i64,
+) -> BiResult<()> {
+    let placeholders = vec!["(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"; total_chunks].join(",");
+    let sql = format!(
+        "INSERT OR REPLACE INTO memories
+           (uid, project_id, mem_type, content, importance,
+            created_at, updated_at, last_access, access_count,
+            file_path, start_line, end_line, language, tags, source_agent)
+         VALUES {placeholders}"
+    );
+    let mut stmt = tx.prepare_cached(&sql)?;
+    let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(total_chunks * 15);
+    for pf in batch {
+        for c in &pf.chunks {
+            params.push(c.uid.clone().into());
+            params.push(project_id.to_string().into());
+            params.push("code".to_string().into());
+            params.push(c.db_content().into());
+            params.push(0.5_f64.into());
+            params.push(now.into());
+            params.push(now.into());
+            params.push(now.into());
+            params.push(0_i64.into());
+            params.push(c.file_path.clone().into());
+            params.push(c.start_line.into());
+            params.push(c.end_line.into());
+            params.push(c.language.clone().into());
+            params.push("[]".to_string().into());
+            params.push(rusqlite::types::Value::Null);
+        }
+    }
+    stmt.execute(rusqlite::params_from_iter(params))?;
+    Ok(())
 }
 
 fn detect_language(p: &Path) -> Option<&'static str> {
@@ -1026,6 +1057,9 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
     if lines.is_empty() {
         return chunks;
     }
+    // Track (start_line, end_line) to deduplicate captures from overlapping
+    // query patterns (e.g. TypeScript `export_statement` + `function_declaration`).
+    let mut seen_spans: HashSet<(usize, usize)> = HashSet::new();
 
     if let Some(query) = &bundle.chunk_query {
         let mut cursor = QueryCursor::new();
@@ -1059,12 +1093,22 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
                     .row
                     .min(start + 200)
                     .min(lines.len() - 1);
+                let start_line = start + 1;
+                let end_line = end + 1;
+                if !seen_spans.insert((start_line, end_line)) {
+                    tracing::warn!(
+                        "ingest: duplicate span L{}-{} skipped (overlapping query patterns)",
+                        start_line,
+                        end_line
+                    );
+                    continue; // duplicate span from overlapping query patterns
+                }
                 let code = lines[start..=end].join("\n");
                 let _kind = node.kind().replace('_', " ");
                 chunks.push(Chunk {
                     code,
-                    start_line: start + 1,
-                    end_line: end + 1,
+                    start_line,
+                    end_line,
                 });
             }
         }

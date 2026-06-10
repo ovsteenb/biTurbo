@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use tracing;
 use turbovec::IdMapIndex;
 
 /// All mutable index state behind one lock — `add`/`search`/`remove` each
@@ -103,8 +104,18 @@ impl ProjectIndex {
         let mut inner = self.inner.lock();
         let mut flat: Vec<f32> = Vec::with_capacity(items.len() * self.dim);
         let mut ids: Vec<u64> = Vec::with_capacity(items.len());
+        let mut seen: HashSet<&str> = HashSet::new();
         for (uid, vector) in items {
             assert_eq!(vector.len(), self.dim, "vector dim mismatch");
+            if !seen.insert(uid) {
+                tracing::warn!(
+                    "index: duplicate uid '{}' skipped in add_batch ({} items, ext-ids so far {})",
+                    uid,
+                    items.len(),
+                    ids.len()
+                );
+                continue; // duplicate uid in same batch — skip
+            }
             let extid = match inner.uid_to_extid.get(uid) {
                 Some(&id) => {
                     let _ = inner.index.remove(id);

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImportResult {
@@ -271,7 +272,10 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
                         state.queued = false;
                         state.running = true;
                         drop(state);
-                        let _ = ingest::ingest_project(&state_clone, &pid, &root);
+                        let run = ingest::ingest_project(&state_clone, &pid, &root);
+                        if let Err(e) = &run {
+                            tracing::error!("watcher ingest for '{}' failed: {e}", pid);
+                        }
                         let mut state = job_state_for_task.lock();
                         state.running = false;
                     }
