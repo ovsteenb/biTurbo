@@ -8,7 +8,7 @@ export function Footer() {
         <div className="grid grid-cols-2 gap-8 md:grid-cols-4">
           <div className="col-span-2 md:col-span-1">
             <Link href="/" className="inline-flex">
-              <Logo size={28} />
+              <Logo size={34} />
             </Link>
             <p className="mt-4 max-w-xs text-sm text-ink-300">
               Local-first memory for AI coding agents. Persistent, project-scoped, semantic.

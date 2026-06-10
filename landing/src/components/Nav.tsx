@@ -42,7 +42,7 @@ export function Nav() {
       >
         <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
           <Link href="/" className="group flex items-center gap-3">
-            <Logo size={28} priority />
+            <Logo size={36} priority />
             <span className="hidden font-mono text-[10px] uppercase tracking-widest text-ink-300 sm:inline-block">
               v0.2
             </span>
