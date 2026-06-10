@@ -1,0 +1,136 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #0c0c07;
+    --bg-soft: #16160f;
+    --bg-card: #1a1a13;
+    --ink: #ecebe3;
+    --ink-soft: #a8a594;
+    --ink-faint: #52513f;
+    --border: rgba(236, 235, 227, 0.08);
+    --border-strong: rgba(236, 235, 227, 0.16);
+    --moss: #8FB87D;
+    --amber: #D4A574;
+    --sky: #7DC4E4;
+    --lilac: #C7A0E0;
+    --sand: #E8E2D6;
+    --font-display: "Cabinet Grotesk", "Inter Tight", system-ui, sans-serif;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    background: var(--bg);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body), "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background: var(--moss);
+    color: var(--bg);
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--bg);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--ink-faint);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ink-soft);
+  }
+}
+
+@layer components {
+  .font-display {
+    font-family: var(--font-display), "Cabinet Grotesk", ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+  .font-mono {
+    font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  .grain::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    opacity: 0.04;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .grid-lines {
+    background-image:
+      linear-gradient(to right, rgba(236, 235, 227, 0.04) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(236, 235, 227, 0.04) 1px, transparent 1px);
+    background-size: 80px 80px;
+  }
+
+  .gradient-radial-moss {
+    background: radial-gradient(circle at 50% 50%, rgba(143, 184, 125, 0.18) 0%, transparent 60%);
+  }
+  .gradient-radial-amber {
+    background: radial-gradient(circle at 50% 50%, rgba(212, 165, 116, 0.22) 0%, transparent 60%);
+  }
+  .gradient-radial-sky {
+    background: radial-gradient(circle at 50% 50%, rgba(125, 196, 228, 0.18) 0%, transparent 60%);
+  }
+  .gradient-radial-lilac {
+    background: radial-gradient(circle at 50% 50%, rgba(199, 160, 224, 0.20) 0%, transparent 60%);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+  .text-pretty {
+    text-wrap: pretty;
+  }
+
+  .button-primary {
+    @apply inline-flex items-center gap-2 rounded-full bg-ink px-6 py-3 text-sm font-medium text-ink-900 transition-all duration-200 hover:bg-sand hover:-translate-y-0.5 hover:shadow-[0_10px_30px_-10px_rgba(236,235,227,0.4)];
+  }
+  .button-ghost {
+    @apply inline-flex items-center gap-2 rounded-full border border-ink-200/20 px-6 py-3 text-sm font-medium text-ink transition-all duration-200 hover:border-ink-200/40 hover:bg-ink-200/5;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-2 rounded-full border border-ink-200/15 bg-ink-200/5 px-3 py-1 text-xs font-mono uppercase tracking-wider text-ink-200/80;
+  }
+}
+
+@layer utilities {
+  .perspective-1000 {
+    perspective: 1000px;
+  }
+  .preserve-3d {
+    transform-style: preserve-3d;
+  }
+
+  .mask-fade-bottom {
+    mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  }
+  .mask-fade-edges {
+    mask-image: radial-gradient(ellipse at center, black 50%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 50%, transparent 100%);
+  }
+}

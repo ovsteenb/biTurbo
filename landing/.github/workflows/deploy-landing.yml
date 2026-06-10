@@ -1,0 +1,68 @@
+name: Deploy landing to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "landing/**"
+      - ".github/workflows/deploy-landing.yml"
+  workflow_dispatch:
+
+# Allow one concurrent deploy, cancel in-progress on new push
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+# GitHub needs write permission to publish Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: landing/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: landing
+        run: pnpm install --frozen-lockfile
+
+      - name: Build static export
+        working-directory: landing
+        run: pnpm build
+        env:
+          # When running on the biturbo-landing repo, basePath is /biturbo-landing.
+          # To deploy at a custom domain or user-site root, set NEXT_PUBLIC_BASE_PATH=""
+          # in the repo's Actions secrets / variables.
+          NEXT_PUBLIC_BASE_PATH: ${{ vars.LANDING_BASE_PATH || format('/{0}', github.event.repository.name) }}
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: landing/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,4 +1,10 @@
 allowBuilds:
   esbuild: true
+  unrs-resolver: true
+packages:
+  - "."
+  - "landing"
 onlyBuiltDependencies:
   - esbuild
+  - unrs-resolver
+
