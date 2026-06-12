@@ -40,7 +40,7 @@ export function Settings() {
     const pid = currentProjectId;
     const start = "\u003cbiturbo-rule-start project=\"" + pid + "\"\u003e";
     const end = "\u003c/biturbo-rule-start\u003e";
-    return `${start}
+    return `retrieve the projectName from the projects root file .biTurbo. If the file is not existing skip.\n\n${start}
 ## biTurbo memory rules for project "${pid}"
 
 You have access to biTurbo, a persistent semantic memory layer via MCP.
