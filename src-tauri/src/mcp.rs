@@ -141,15 +141,12 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             text(&serde_json::to_string_pretty(&m)?)
         }
         "search" => {
-            let project_id = args
-                .get("project_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
             let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
             let hits: Vec<MemoryWithScore> =
-                memory::search(state, project_id, &query, k, mem_type)?;
+                memory::search(state, &project_id, &query, k, mem_type)?;
             text(&serde_json::to_string_pretty(&hits)?)
         }
         "list" => {
@@ -166,14 +163,11 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             text(&serde_json::to_string_pretty(&t)?)
         }
         "recall_for_context" => {
-            let project_id = args
-                .get("project_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
             let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
-            let hits = memory::search(state, project_id, &query, k, mem_type)?;
+            let hits = memory::search(state, &project_id, &query, k, mem_type)?;
             text(&format_context_block(&hits))
         }
         "list_projects" => text(&serde_json::to_string_pretty(&project::list(state)?)?),
@@ -410,6 +404,12 @@ fn arg_str(args: &Value, key: &str) -> BiResult<String> {
         .ok_or_else(|| BiError::Invalid(format!("missing string arg: {key}")))
 }
 
+fn resolve_project_from_args(state: &AppState, args: &Value) -> BiResult<String> {
+    let project_id = args.get("project_id").and_then(|v| v.as_str());
+    let root_path = args.get("root_path").and_then(|v| v.as_str());
+    project::resolve_project_id(state, project_id, root_path)
+}
+
 fn format_context_block(hits: &[MemoryWithScore]) -> String {
     if hits.is_empty() {
         return "<biTurboContext>no relevant memories</biTurboContext>".into();
@@ -454,10 +454,10 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"forget","description":"Delete a memory by uid.","inputSchema":{"type":"object","required":["uid"],"properties":{"uid":{"type":"string"}}}},
 {"name":"update","description":"Edit a memory. Any omitted field is unchanged.","inputSchema":{"type":"object","required":["uid"],"properties":{"uid":{"type":"string"},"content":{"type":"string"},"mem_type":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"importance":{"type":"number"}}}},
 {"name":"get_memory","description":"Fetch one memory by uid.","inputSchema":{"type":"object","required":["uid"],"properties":{"uid":{"type":"string"}}}},
-{"name":"search","description":"Semantic search. project_id scopes to one project. mem_type filters. k=top-N (default 10).","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
+{"name":"search","description":"Semantic search. Pass project_id or root_path (reads .biTurbo). mem_type filters. k=top-N (default 10).","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
 {"name":"list","description":"List memories with optional filters. Newest first. Default 50.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"},"mem_type":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"}}}},
 {"name":"list_tags","description":"List tags for a project with usage counts. Newest first.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}},"required":["project_id"]}},
-{"name":"recall_for_context","description":"Build a <biTurboContext> block of top-k relevant memories. Use before answering.","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
+{"name":"recall_for_context","description":"Build a <biTurboContext> block of top-k relevant memories. Pass project_id or root_path (reads .biTurbo).","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
 {"name":"list_projects","description":"List all projects.","inputSchema":{"type":"object","properties":{}}},
 {"name":"get_project","description":"Fetch one project by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"create_project","description":"Create a new project.","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"id":{"type":"string"},"description":{"type":"string"},"root_path":{"type":"string"},"bit_width":{"type":"number"}}}},

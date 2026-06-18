@@ -257,49 +257,18 @@ pub fn search(
         project_id.to_string()
     };
 
-    let kk = (k * 2).max(20);
+    let kk = (k * 3).max(30);
     let vec_hits = state.embed_and_search(&project_id, query, kk, None)?;
 
     let conn = state.db.conn()?;
-    let mut fts_uids: Vec<(String, f64)> = Vec::new();
-    let fts_query = sanitize_fts_query(query);
-    if !fts_query.is_empty() {
-        let kk_i64 = kk as i64;
-        let mut stmt = if let Some(_t) = mem_type {
-            conn.prepare_cached(
-                "SELECT uid, bm25(memories_fts) FROM memories_fts
-                 WHERE memories_fts MATCH ?1 AND mem_type = ?2 AND project_id = ?3
-                 ORDER BY bm25(memories_fts) ASC LIMIT ?4",
-            )?
-        } else {
-            conn.prepare_cached(
-                "SELECT uid, bm25(memories_fts) FROM memories_fts
-                 WHERE memories_fts MATCH ?1 AND project_id = ?2
-                 ORDER BY bm25(memories_fts) ASC LIMIT ?3",
-            )?
-        };
-        let row_map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(String, f64)> {
-            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-        };
-        let rows: Box<dyn Iterator<Item = rusqlite::Result<(String, f64)>>> = if let Some(t) =
-            mem_type
-        {
-            Box::new(stmt.query_map(
-                rusqlite::params![fts_query, t, &project_id, kk_i64],
-                row_map,
-            )?)
-        } else {
-            Box::new(stmt.query_map(rusqlite::params![fts_query, &project_id, kk_i64], row_map)?)
-        };
-        for r in rows.flatten() {
-            fts_uids.push(r);
-        }
-    }
+    let fts_uids = fts_search(&conn, query, &project_id, mem_type, kk)?;
 
     let mut fused: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
     const RRF_K: f32 = 60.0;
     for (rank, h) in vec_hits.iter().enumerate() {
-        let score = 1.0 / (RRF_K + rank as f32 + 1.0);
+        let rank_score = 1.0 / (RRF_K + rank as f32 + 1.0);
+        let sim = h.score.clamp(0.0, 1.0);
+        let score = rank_score * (0.5 + 0.5 * sim);
         *fused.entry(h.uid.clone()).or_insert(0.0) += score;
     }
     for (rank, (uid, _bm25)) in fts_uids.iter().enumerate() {
@@ -321,8 +290,8 @@ pub fn search(
         "SELECT uid, project_id, mem_type, content, tags, source_agent, importance,
                 supersedes, superseded_by, created_at, updated_at, last_access,
                 access_count, file_path, start_line, end_line, language
-         FROM memories WHERE uid IN ({})",
-        placeholders
+         FROM memories
+         WHERE uid IN ({placeholders}) AND superseded_by IS NULL"
     );
     let mut stmt = conn.prepare_cached(&select_sql)?;
     let mut by_uid: std::collections::HashMap<String, Memory> = stmt
@@ -339,53 +308,161 @@ pub fn search(
     // Bookkeeping in one transaction: bump access stats for all hits and log a
     // single activity row for the whole search (not one per hit).
     let now = chrono::Utc::now().timestamp_millis();
-    let hit_uids: Vec<String> = ranked.iter().map(|(u, _)| u.clone()).collect();
+    let hit_uids: Vec<String> = ranked
+        .iter()
+        .filter_map(|(u, _)| by_uid.get(u).map(|_| u.clone()))
+        .collect();
     let top_uids: Vec<String> = hit_uids.iter().take(5).cloned().collect();
-    state.db.write(|tx| {
-        let update_sql = format!(
-            "UPDATE memories SET access_count = access_count + 1, last_access = ? WHERE uid IN ({})",
-            placeholders
-        );
-        let mut upd = tx.prepare_cached(&update_sql)?;
-        upd.execute(rusqlite::params_from_iter(
-            std::iter::once(rusqlite::types::Value::Integer(now)).chain(
-                hit_uids
-                    .iter()
-                    .map(|u| rusqlite::types::Value::Text(u.clone())),
-            ),
-        ))?;
-        log_activity(
-            tx,
-            Some(&project_id),
-            None,
-            "read",
-            None,
-            Some(&serde_json::json!({"query": query, "hits": hit_uids.len(), "top_uids": top_uids})),
-        )?;
-        Ok(())
-    })?;
+    if !hit_uids.is_empty() {
+        let placeholders = std::iter::repeat("?")
+            .take(hit_uids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        state.db.write(|tx| {
+            let update_sql = format!(
+                "UPDATE memories SET access_count = access_count + 1, last_access = ? WHERE uid IN ({placeholders})"
+            );
+            let mut upd = tx.prepare_cached(&update_sql)?;
+            upd.execute(rusqlite::params_from_iter(
+                std::iter::once(rusqlite::types::Value::Integer(now)).chain(
+                    hit_uids
+                        .iter()
+                        .map(|u| rusqlite::types::Value::Text(u.clone())),
+                ),
+            ))?;
+            log_activity(
+                tx,
+                Some(&project_id),
+                None,
+                "read",
+                None,
+                Some(&serde_json::json!({"query": query, "hits": hit_uids.len(), "top_uids": top_uids})),
+            )?;
+            Ok(())
+        })?;
+    }
 
     Ok(ranked
         .into_iter()
         .filter_map(|(uid, score)| {
-            by_uid
-                .remove(&uid)
-                .map(|memory| MemoryWithScore { memory, score })
+            by_uid.remove(&uid).map(|memory| {
+                let boosted = score * (0.7 + 0.3 * memory.importance.clamp(0.0, 1.0));
+                MemoryWithScore {
+                    memory,
+                    score: boosted,
+                }
+            })
         })
         .collect())
 }
 
-fn sanitize_fts_query(q: &str) -> String {
+fn fts_search(
+    conn: &rusqlite::Connection,
+    query: &str,
+    project_id: &str,
+    mem_type: Option<&str>,
+    limit: usize,
+) -> BiResult<Vec<(String, f64)>> {
+    let kk_i64 = limit as i64;
+    let or_query = sanitize_fts_query(query, FtsCombine::Or);
+    if !or_query.is_empty() {
+        if let Ok(hits) = run_fts_query(conn, &or_query, project_id, mem_type, kk_i64) {
+            if !hits.is_empty() {
+                return Ok(hits);
+            }
+        }
+    }
+    let and_query = sanitize_fts_query(query, FtsCombine::And);
+    if and_query.is_empty() {
+        return Ok(Vec::new());
+    }
+    run_fts_query(conn, &and_query, project_id, mem_type, kk_i64)
+}
+
+fn run_fts_query(
+    conn: &rusqlite::Connection,
+    fts_query: &str,
+    project_id: &str,
+    mem_type: Option<&str>,
+    limit: i64,
+) -> BiResult<Vec<(String, f64)>> {
+    let mut out = Vec::new();
+    let row_map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(String, f64)> {
+        Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+    };
+    if let Some(t) = mem_type {
+        let mut stmt = conn.prepare_cached(
+            "SELECT m.uid, bm25(memories_fts)
+             FROM memories_fts
+             JOIN memories m ON m.uid = memories_fts.uid
+             WHERE memories_fts MATCH ?1 AND m.mem_type = ?2 AND m.project_id = ?3
+               AND m.superseded_by IS NULL
+             ORDER BY bm25(memories_fts) ASC LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![fts_query, t, project_id, limit], row_map)?;
+        for r in rows.flatten() {
+            out.push(r);
+        }
+    } else {
+        let mut stmt = conn.prepare_cached(
+            "SELECT m.uid, bm25(memories_fts)
+             FROM memories_fts
+             JOIN memories m ON m.uid = memories_fts.uid
+             WHERE memories_fts MATCH ?1 AND m.project_id = ?2
+               AND m.superseded_by IS NULL
+             ORDER BY bm25(memories_fts) ASC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![fts_query, project_id, limit], row_map)?;
+        for r in rows.flatten() {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Copy)]
+enum FtsCombine {
+    And,
+    Or,
+}
+
+fn sanitize_fts_query(q: &str, combine: FtsCombine) -> String {
     let tokens: Vec<String> = q
         .split_whitespace()
         .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-'))
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty() && t.len() >= 2)
         .map(|t| {
             let safe = t.replace('"', "");
             format!("\"{safe}\"*")
         })
         .collect();
-    tokens.join(" ")
+    if tokens.is_empty() {
+        return String::new();
+    }
+    let sep = match combine {
+        FtsCombine::And => " ",
+        FtsCombine::Or => " OR ",
+    };
+    tokens.join(sep)
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn fts_or_query_matches_any_token() {
+        let q = sanitize_fts_query("hybrid search turbovec", FtsCombine::Or);
+        assert!(q.contains(" OR "));
+        assert!(q.contains("\"hybrid\"*"));
+    }
+
+    #[test]
+    fn fts_skips_single_char_tokens() {
+        let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
+        assert!(!q.contains("\"a\"*"));
+        assert!(q.contains("\"MCP\"*"));
+    }
 }
 
 pub fn list(

@@ -111,6 +111,50 @@ mod tests {
     }
 
     #[test]
+    fn index_repair_backfills_missing_vectors() {
+        let data_dir = temp_data_dir();
+        let state = AppState::open(&data_dir).expect("open state");
+        let project_id = &state.default_project_id;
+
+        let mem = memory::remember(
+            &state,
+            RememberInput {
+                content: "index repair smoke: orphaned sqlite memory".into(),
+                ..Default::default()
+            },
+        )
+        .expect("remember");
+
+        assert!(wait_for_index_flush(
+            &state,
+            project_id,
+            Duration::from_secs(3)
+        ));
+
+        // Wipe the on-disk index while keeping SQLite rows — simulates drift.
+        let indices_dir = data_dir.join("indices");
+        std::fs::remove_file(indices_dir.join(format!("{project_id}.tvim"))).ok();
+        std::fs::remove_file(indices_dir.join(format!("{project_id}.uidmap.json"))).ok();
+        state.indices.write().remove(project_id.as_str());
+
+        let state2 = AppState::open(&data_dir).expect("reopen");
+        let hits = memory::search(
+            &state2,
+            project_id,
+            "orphaned sqlite memory",
+            5,
+            None,
+        )
+        .expect("search after repair");
+        assert!(
+            hits.iter().any(|h| h.memory.uid == mem.uid),
+            "repair_index_if_needed did not backfill missing vector"
+        );
+
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[test]
     fn mcp_style_reopen_persists_index() {
         let data_dir = temp_data_dir();
 

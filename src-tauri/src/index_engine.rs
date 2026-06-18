@@ -271,6 +271,10 @@ impl ProjectIndex {
         self.inner.lock().uid_to_extid.len()
     }
 
+    pub fn contains_uid(&self, uid: &str) -> bool {
+        self.inner.lock().uid_to_extid.contains_key(uid)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

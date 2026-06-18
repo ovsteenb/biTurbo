@@ -4,6 +4,7 @@
 use crate::db::log_activity;
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,7 +132,64 @@ fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     })
 }
 
-fn slugify(s: &str) -> String {
+/// Resolve which project to use for search/recall.
+/// Prefers an explicit `project_id`, then `.biTurbo` / `root_path` lookup, else default.
+pub fn resolve_project_id(
+    state: &AppState,
+    project_id: Option<&str>,
+    root_path: Option<&str>,
+) -> BiResult<String> {
+    if let Some(pid) = project_id.filter(|s| !s.is_empty()) {
+        return Ok(pid.to_string());
+    }
+    if let Some(root) = root_path.filter(|s| !s.is_empty()) {
+        let biturbo_file = std::path::PathBuf::from(root).join(".biTurbo");
+        if biturbo_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(&biturbo_file) {
+                for line in content.lines() {
+                    if let Some(name) = line.strip_prefix("projectName=") {
+                        let name = name.trim();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let slug = slugify(name);
+                        if get(state, &slug).is_ok() {
+                            return Ok(slug);
+                        }
+                        let conn = state.db.conn()?;
+                        let found: Option<String> = conn
+                            .query_row(
+                                "SELECT id FROM projects WHERE name = ?1 OR id = ?1 LIMIT 1",
+                                rusqlite::params![name],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        if let Some(id) = found {
+                            return Ok(id);
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(canonical) = std::fs::canonicalize(root) {
+            let canonical = canonical.to_string_lossy().to_string();
+            let conn = state.db.conn()?;
+            let found: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM projects WHERE root_path = ?1 LIMIT 1",
+                    rusqlite::params![canonical],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = found {
+                return Ok(id);
+            }
+        }
+    }
+    Ok(state.default_project_id.clone())
+}
+
+pub fn slugify(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {

@@ -278,8 +278,53 @@ impl AppState {
         k: usize,
         allowlist: Option<&[String]>,
     ) -> BiResult<Vec<crate::index_engine::SearchHit>> {
+        self.repair_index_if_needed(project_id)?;
         let vec = self.embedder.embed(query)?;
         let idx = self.get_or_load_index(project_id)?;
         idx.search(&vec, k, allowlist)
+    }
+
+    /// Backfill the vector index when SQLite has more active memories than the on-disk index.
+    pub fn repair_index_if_needed(&self, project_id: &str) -> BiResult<()> {
+        let db_rows: Vec<(String, String)> = {
+            let conn = self.db.conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT uid, content FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![project_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let idx = self.get_or_load_index(project_id)?;
+        if idx.len() >= db_rows.len() {
+            return Ok(());
+        }
+        let rows: Vec<(String, String)> = db_rows
+            .into_iter()
+            .filter(|(uid, _)| !idx.contains_uid(uid))
+            .collect();
+        if rows.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(
+            "repairing vector index for '{}': backfilling {} of {} memories",
+            project_id,
+            rows.len(),
+            idx.len() + rows.len()
+        );
+        const BATCH: usize = 32;
+        for chunk in rows.chunks(BATCH) {
+            let text_refs: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
+            let vecs = self.embedder.embed_batch(&text_refs)?;
+            let items: Vec<(String, Vec<f32>)> = chunk
+                .iter()
+                .zip(vecs)
+                .map(|((uid, _), v)| (uid.clone(), v))
+                .collect();
+            idx.add_batch(&items)?;
+        }
+        let _ = idx.flush();
+        Ok(())
     }
 }
