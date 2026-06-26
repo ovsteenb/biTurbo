@@ -94,7 +94,8 @@ impl AppState {
                         let _ = idx.maybe_flush(std::time::Duration::from_millis(300), false);
                     }
                     // 2) evict old indices (not touched in 10 min or over budget)
-                    let _ = state_for_thread.evict_stale_indices(std::time::Duration::from_secs(600));
+                    let _ =
+                        state_for_thread.evict_stale_indices(std::time::Duration::from_secs(600));
                     let _ = state_for_thread.evict_if_over_budget();
                 })
                 .ok();
@@ -137,7 +138,9 @@ impl AppState {
         {
             let indices = self.indices.read();
             if let Some(idx) = indices.get(project_id).cloned() {
-                self.index_access_times.lock().insert(project_id.to_string(), Instant::now());
+                self.index_access_times
+                    .lock()
+                    .insert(project_id.to_string(), Instant::now());
                 return Ok(idx);
             }
         }
@@ -163,7 +166,9 @@ impl AppState {
         {
             let mut indices = self.indices.write();
             indices.insert(project_id.to_string(), idx.clone());
-            self.index_access_times.lock().insert(project_id.to_string(), Instant::now());
+            self.index_access_times
+                .lock()
+                .insert(project_id.to_string(), Instant::now());
         }
         let _ = self.evict_if_over_budget();
         Ok(idx)
@@ -195,10 +200,8 @@ impl AppState {
             }
             let lru_pid = {
                 let times = self.index_access_times.lock();
-                let mut candidates: Vec<(String, Instant)> = times
-                    .iter()
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect();
+                let mut candidates: Vec<(String, Instant)> =
+                    times.iter().map(|(k, v)| (k.clone(), *v)).collect();
                 candidates.sort_by(|a, b| a.1.cmp(&b.1));
                 candidates.into_iter().map(|(k, _)| k).next()
             };
@@ -206,7 +209,11 @@ impl AppState {
                 let mut indices = self.indices.write();
                 indices.remove(&pid);
                 self.index_access_times.lock().remove(&pid);
-                tracing::info!("evicted index '{}' to stay under {} MiB budget", pid, budget / 1024 / 1024);
+                tracing::info!(
+                    "evicted index '{}' to stay under {} MiB budget",
+                    pid,
+                    budget / 1024 / 1024
+                );
             } else {
                 break;
             }

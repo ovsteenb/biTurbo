@@ -138,14 +138,8 @@ mod tests {
         state.indices.write().remove(project_id.as_str());
 
         let state2 = AppState::open(&data_dir).expect("reopen");
-        let hits = memory::search(
-            &state2,
-            project_id,
-            "orphaned sqlite memory",
-            5,
-            None,
-        )
-        .expect("search after repair");
+        let hits = memory::search(&state2, project_id, "orphaned sqlite memory", 5, None)
+            .expect("search after repair");
         assert!(
             hits.iter().any(|h| h.memory.uid == mem.uid),
             "repair_index_if_needed did not backfill missing vector"

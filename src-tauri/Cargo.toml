@@ -50,8 +50,8 @@ ndarray = "0.16"
 fastembed = "4"
 ort = "2.0.0-rc.9"
 
-# MCP — using hand-rolled JSON-RPC for stability; rmcp deps kept off for now.
-# rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+# MCP — using hand-rolled stdio JSON-RPC for stability.
+# Keep SDK deps out of the binary until the public MCP surface needs them.
 
 # Tree-sitter (project indexing)
 tree-sitter = "0.25"

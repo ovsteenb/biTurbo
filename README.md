@@ -54,15 +54,15 @@ Requires: **pnpm 11+**, **node 20+**, **rustc 1.77+**, **macOS / Linux** (Window
 
 ```bash
 # 1. Clone & enter
-git clone https://github.com/RyanCodrai/biturbo.git
-cd biturbo
+git clone https://github.com/ltfysl/biTurbo.git
+cd biTurbo
 
 # 2. JS deps
 pnpm install
 
-# 3. Rust binary (release)
+# 3. Rust MCP binary
 pnpm mcp:build           # writes target/debug/biturbo-mcp
-# or for max speed:
+# or for a release build:
 cd src-tauri && cargo build --release --bin biturbo-mcp
 ```
 
@@ -167,6 +167,8 @@ Full ruleset, anti-patterns, and tool reference: see [INSTRUCTIONS.md](./INSTRUC
 
 ### MCP tools (19)
 
+These are the stable tools exposed to agents. The internal dispatcher may contain additional development-only helpers that are not part of the public MCP surface.
+
 | | | | |
 |---|---|---|---|
 | `remember` | `forget` | `update` | `get_memory` |
@@ -213,7 +215,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 | DB | SQLite + r2d2 + rusqlite | Local, WAL, zero-config |
 | Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
 | Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal/CPU, ~30 MB model |
-| MCP | rmcp 1.7 (official Rust SDK) | First-class stdio, macros, server handler |
+| MCP | stdio JSON-RPC | Lightweight hand-rolled MCP transport, no SDK runtime dependency |
 | Tree-sitter | 0.25 + lang crates | rust / ts / js / py / go, per-function chunks, structural code search |
 
 ---

@@ -244,7 +244,10 @@ pub fn ingest_project(state: State<'_, AppState>, args: IngestArgs) -> BiResult<
 }
 
 #[tauri::command]
-pub fn ingest_multiple_projects(state: State<'_, AppState>, args: MultiIngestArgs) -> BiResult<IngestJobResponse> {
+pub fn ingest_multiple_projects(
+    state: State<'_, AppState>,
+    args: MultiIngestArgs,
+) -> BiResult<IngestJobResponse> {
     // Validate all projects exist and paths exist
     for (project_id, root_path) in &args.projects {
         project::get(state.inner(), project_id).map_err(|_| {
@@ -265,7 +268,8 @@ pub fn ingest_multiple_projects(state: State<'_, AppState>, args: MultiIngestArg
     let job_id = format!("multi-ing-{}", uuid::Uuid::new_v4());
     let state_clone = state.inner().clone();
     let job_id_for_thread = job_id.clone();
-    let projects: Vec<(String, std::path::PathBuf)> = args.projects
+    let projects: Vec<(String, std::path::PathBuf)> = args
+        .projects
         .into_iter()
         .map(|(project_id, root_path)| (project_id, std::path::PathBuf::from(root_path)))
         .collect();

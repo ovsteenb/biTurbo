@@ -1,6 +1,7 @@
 use crate::db::log_activity;
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,25 +107,30 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             "project '{project_id}' does not exist — create it first with create_project"
         ))
     })?;
-    let mem_type = input.mem_type.as_deref().unwrap_or("fact").to_string();
+    let mem_type = MemType::from_str(input.mem_type.as_deref().unwrap_or("fact"))?
+        .as_str()
+        .to_string();
     let importance = input.importance.unwrap_or(0.5).clamp(0.0, 1.0);
     let uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let tags_json = serde_json::to_string(&input.tags.clone().unwrap_or_default())?;
 
     state.db.write(|tx| {
-        if let Some(old_uid) = &input.supersedes {
-            tx.execute(
-                "UPDATE memories SET superseded_by = id, updated_at = ?1
-                 WHERE uid = ?2 AND superseded_by IS NULL",
-                rusqlite::params![now, old_uid],
-            )?;
-        }
+        let supersedes_id: Option<i64> = match input.supersedes.as_deref() {
+            Some(old_uid) => tx
+                .query_row(
+                    "SELECT id FROM memories WHERE uid = ?1 AND project_id = ?2 AND superseded_by IS NULL",
+                    rusqlite::params![old_uid, project_id],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            None => None,
+        };
         tx.execute(
             "INSERT INTO memories(uid, project_id, mem_type, content, tags, source_agent,
                                   importance, created_at, updated_at, last_access,
-                                  access_count, file_path, start_line, end_line, language)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?8,0,?9,?10,?11,?12)",
+                                  access_count, file_path, start_line, end_line, language, supersedes)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?8,0,?9,?10,?11,?12,?13)",
             rusqlite::params![
                 uid,
                 project_id,
@@ -138,8 +144,18 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
                 input.start_line,
                 input.end_line,
                 input.language,
+                supersedes_id,
             ],
         )?;
+        let new_id = tx.last_insert_rowid();
+        if let Some(old_id) = supersedes_id {
+            tx.execute(
+                "UPDATE memories
+                 SET superseded_by = ?1, updated_at = ?2
+                 WHERE id = ?3 AND superseded_by IS NULL",
+                rusqlite::params![new_id, now, old_id],
+            )?;
+        }
         tx.execute(
             "UPDATE projects SET memory_count = memory_count + 1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![now, project_id],
@@ -205,10 +221,10 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
         .content
         .clone()
         .unwrap_or_else(|| existing.content.clone());
-    let new_type = input
-        .mem_type
-        .clone()
-        .unwrap_or_else(|| existing.mem_type.clone());
+    let new_type = match input.mem_type.clone() {
+        Some(mem_type) => MemType::from_str(&mem_type)?.as_str().to_string(),
+        None => existing.mem_type.clone(),
+    };
     let new_tags_json = match input.tags.clone() {
         Some(t) => serde_json::to_string(&t)?,
         None => serde_json::to_string(&existing.tags)?,
@@ -251,6 +267,9 @@ pub fn search(
     mem_type: Option<&str>,
 ) -> BiResult<Vec<MemoryWithScore>> {
     state.embedder.release_if_idle();
+    if let Some(mem_type) = mem_type {
+        MemType::from_str(mem_type)?;
+    }
     let project_id = if project_id.is_empty() {
         state.default_project_id.clone()
     } else {
