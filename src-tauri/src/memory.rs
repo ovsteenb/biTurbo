@@ -278,9 +278,19 @@ pub fn search(
     };
 
     let kk = (k * 3).max(30);
-    let vec_hits = state.embed_and_search(&project_id, query, kk, None)?;
-
     let conn = state.db.conn()?;
+
+    let allowlist_uids: Option<Vec<String>> = if let Some(t) = mem_type {
+        let mut stmt = conn.prepare_cached(
+            "SELECT uid FROM memories WHERE project_id = ?1 AND mem_type = ?2 AND superseded_by IS NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![project_id, t], |r| r.get::<_, String>(0))?;
+        Some(rows.filter_map(|r| r.ok()).collect())
+    } else {
+        None
+    };
+
+    let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist_uids.as_deref())?;
     let fts_uids = fts_search(&conn, query, &project_id, mem_type, kk)?;
 
     let mut fused: std::collections::HashMap<String, f32> = std::collections::HashMap::new();

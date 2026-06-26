@@ -293,7 +293,24 @@ impl AppState {
 
     /// Backfill the vector index when SQLite has more active memories than the on-disk index.
     pub fn repair_index_if_needed(&self, project_id: &str) -> BiResult<()> {
-        let db_rows: Vec<(String, String)> = {
+        let idx = self.get_or_load_index(project_id)?;
+
+        // Hot path: most searches should not scan every memory row. Count first,
+        // and only walk rows when SQLite has more active memories than the loaded index.
+        let active_count: usize = {
+            let conn = self.db.conn()?;
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
+                rusqlite::params![project_id],
+                |r| r.get::<_, i64>(0),
+            )? as usize
+        };
+
+        if idx.len() >= active_count {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String)> = {
             let conn = self.db.conn()?;
             let mut stmt = conn.prepare(
                 "SELECT uid, content FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
@@ -301,16 +318,11 @@ impl AppState {
             let rows = stmt.query_map(rusqlite::params![project_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?;
-            rows.filter_map(|r| r.ok()).collect()
+            rows.filter_map(|r| r.ok())
+                .filter(|(uid, _)| !idx.contains_uid(uid))
+                .collect()
         };
-        let idx = self.get_or_load_index(project_id)?;
-        if idx.len() >= db_rows.len() {
-            return Ok(());
-        }
-        let rows: Vec<(String, String)> = db_rows
-            .into_iter()
-            .filter(|(uid, _)| !idx.contains_uid(uid))
-            .collect();
+
         if rows.is_empty() {
             return Ok(());
         }

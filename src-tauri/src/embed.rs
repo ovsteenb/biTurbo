@@ -34,10 +34,12 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn new(model_name: &str) -> BiResult<Self> {
-        let (model_enum, canonical, dim) = resolve_model(model_name)?;
-        let model = load_model(model_enum)?;
+        let (_model_enum, canonical, dim) = resolve_model(model_name)?;
         Ok(Self {
-            model: Arc::new(RwLock::new(Some(model))),
+            // Lazy-load the ONNX model on first semantic operation instead of AppState::open.
+            // This keeps MCP/UI cold start light and avoids holding model memory when the
+            // caller only needs metadata, projects, settings, or non-semantic actions.
+            model: Arc::new(RwLock::new(None)),
             model_name: canonical,
             dim,
             query_cache: Arc::new(Mutex::new(LruCache::new(

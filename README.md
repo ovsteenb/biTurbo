@@ -117,7 +117,7 @@ pnpm mcp:test
 pnpm tauri:dev
 ```
 
-Opens the Tauri 2 window. First launch downloads `BGE-small-en` (~30 MB) into your OS cache — next launches are instant.
+Opens the Tauri 2 window. First semantic operation downloads `BGE-small-en` (~30 MB) into your OS cache — subsequent semantic operations reuse the cached model.
 
 | View | What it does |
 |---|---|
