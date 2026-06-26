@@ -284,3 +284,11 @@ biTurbo/
 ## License
 
 MIT.
+
+
+## Recall ranking
+
+Recall uses hybrid vector + SQLite FTS retrieval, then applies a cheap second-stage reranker before formatting context.
+
+The reranker keeps semantic relevance as the base score, then adds small boosts for exact query-term matches in content, file path, tags, and language, plus gentle boosts for recent, important, and repeatedly accessed memories. This makes recall feel smarter without adding a heavy cross-encoder or extra model.
+

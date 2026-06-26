@@ -615,5 +615,31 @@ fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         start_line: r.get(14)?,
         end_line: r.get(15)?,
         language: r.get(16)?,
-    })
+    });
+    #[test]
+    fn reranker_boosts_path_and_tags() {
+        let mem = Memory {
+            uid: "1".into(),
+            project_id: "p".into(),
+            mem_type: "code".into(),
+            content: "function handles the login request".into(),
+            tags: vec!["auth".into()],
+            source_agent: None,
+            importance: 0.7,
+            supersedes: None,
+            superseded_by: None,
+            created_at: 0,
+            updated_at: 0,
+            last_access: 0,
+            access_count: 3,
+            file_path: Some("src/auth/session.ts".into()),
+            start_line: Some(10),
+            end_line: Some(20),
+            language: Some("typescript".into()),
+        };
+
+        let terms = tokenize_query("auth login session typescript");
+        let score = rerank_memory_score(0.01, &mem, &terms, 0);
+        assert!(score > 0.10);
+    }
 }
