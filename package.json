@@ -14,8 +14,9 @@
     "tauri:build": "tauri build",
     "tauri:build:notarized": "APPLE_ID=\"$APPLE_ID\" APPLE_PASSWORD=\"$APPLE_PASSWORD\" APPLE_TEAM_ID=\"$APPLE_TEAM_ID\" tauri build",
     "mcp:dev": "cargo run --manifest-path src-tauri/Cargo.toml --bin biturbo-mcp",
-    "mcp:build": "cargo build --manifest-path src-tauri/Cargo.toml --bin biturbo-mcp",
-    "mcp:test": "node --experimental-strip-types --no-warnings scripts/mcp-smoke-test.ts"
+    "mcp:build": "pnpm build && cargo build --manifest-path src-tauri/Cargo.toml --bin biturbo-mcp",
+    "mcp:test": "node --experimental-strip-types --no-warnings scripts/mcp-smoke-test.ts",
+    "recall:eval": "node --experimental-strip-types --no-warnings scripts/recall-eval.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

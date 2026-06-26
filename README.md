@@ -286,6 +286,17 @@ biTurbo/
 MIT.
 
 
+## Recall evals
+
+biTurbo includes a small recall quality harness for V2 work.
+
+```bash
+pnpm mcp:build
+pnpm recall:eval
+```
+
+The eval seeds a temporary project from `evals/recall-golden.json`, runs `search` and `recall_for_context`, then reports `recall@k` and context-term failures. Extend the golden file with real project memories whenever recall behavior changes.
+
 ## Recall ranking
 
 Recall uses hybrid vector + SQLite FTS retrieval, then applies a cheap second-stage reranker before formatting context.
