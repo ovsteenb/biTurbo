@@ -267,6 +267,7 @@ pub fn search(
     mem_type: Option<&str>,
 ) -> BiResult<Vec<MemoryWithScore>> {
     state.embedder.release_if_idle();
+    let k = k.clamp(1, 100);
     if let Some(mem_type) = mem_type {
         MemType::from_str(mem_type)?;
     }
@@ -297,7 +298,8 @@ pub fn search(
 
     let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.truncate(k);
+    // Keep extra candidates because superseded memories are filtered out in SQL below.
+    ranked.truncate(k.saturating_mul(2).max(k));
 
     if ranked.is_empty() {
         return Ok(Vec::new());
@@ -372,6 +374,7 @@ pub fn search(
                 }
             })
         })
+        .take(k)
         .collect())
 }
 
@@ -481,6 +484,14 @@ mod search_tests {
         let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
         assert!(!q.contains("\"a\"*"));
         assert!(q.contains("\"MCP\"*"));
+    }
+
+    #[test]
+    fn fts_query_strips_quotes_and_punctuation() {
+        let q = sanitize_fts_query(r#"auth: "login-flow"!"#, FtsCombine::Or);
+        assert!(q.contains("\"auth\"*"));
+        assert!(q.contains("\"login-flow\"*"));
+        assert!(!q.contains("!"));
     }
 }
 

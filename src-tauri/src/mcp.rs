@@ -143,7 +143,7 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "search" => {
             let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
-            let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let k = bounded_k(&args, 10, 100);
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
             let hits: Vec<MemoryWithScore> =
                 memory::search(state, &project_id, &query, k, mem_type)?;
@@ -165,7 +165,7 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "recall_for_context" => {
             let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
-            let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+            let k = bounded_k(&args, 8, 20);
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
             let hits = memory::search(state, &project_id, &query, k, mem_type)?;
             text(&format_context_block(&hits))
@@ -410,6 +410,13 @@ fn arg_str(args: &Value, key: &str) -> BiResult<String> {
         .ok_or_else(|| BiError::Invalid(format!("missing string arg: {key}")))
 }
 
+fn bounded_k(args: &Value, default: u64, max: u64) -> usize {
+    args.get("k")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(default)
+        .clamp(1, max) as usize
+}
+
 fn resolve_project_from_args(state: &AppState, args: &Value) -> BiResult<String> {
     let project_id = args.get("project_id").and_then(|v| v.as_str());
     let root_path = args.get("root_path").and_then(|v| v.as_str());
@@ -420,16 +427,48 @@ fn format_context_block(hits: &[MemoryWithScore]) -> String {
     if hits.is_empty() {
         return "<biTurboContext>no relevant memories</biTurboContext>".into();
     }
+
     let mut s = String::from("<biTurboContext>\n");
     for (i, h) in hits.iter().enumerate() {
+        let tags = if h.memory.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" · tags={}", h.memory.tags.join(","))
+        };
+        let source = h
+            .memory
+            .source_agent
+            .as_deref()
+            .map(|a| format!(" · source={a}"))
+            .unwrap_or_default();
+
         s.push_str(&format!(
-            "[{}] ({} · score={:.3} · importance={:.2})\n{}\n\n",
+            "[{}] uid={} · type={} · score={:.3} · importance={:.2}{}{}\n",
             i + 1,
+            h.memory.uid,
             h.memory.mem_type,
             h.score,
             h.memory.importance,
-            h.memory.content.trim()
+            tags,
+            source,
         ));
+
+        if let Some(path) = h.memory.file_path.as_deref() {
+            let range = match (h.memory.start_line, h.memory.end_line) {
+                (Some(start), Some(end)) => format!(":{start}-{end}"),
+                _ => String::new(),
+            };
+            let language = h
+                .memory
+                .language
+                .as_deref()
+                .map(|lang| format!(" · lang={lang}"))
+                .unwrap_or_default();
+            s.push_str(&format!("location={path}{range}{language}\n"));
+        }
+
+        s.push_str(h.memory.content.trim());
+        s.push_str("\n\n");
     }
     s.push_str("</biTurboContext>");
     s
