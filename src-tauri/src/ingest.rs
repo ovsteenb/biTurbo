@@ -93,6 +93,43 @@ pub struct GraphEdge {
     pub weight: f32,
 }
 
+/// Create a project-local `.biturboignore` on first ingest.
+///
+/// The ignore crate already respects `.gitignore`, global gitignore, `.git/info/exclude`,
+/// and `.ignore`. `.biturboignore` gives users a biTurbo-specific layer for files that
+/// should stay in git but not in semantic memory, such as generated SDKs, fixtures,
+/// snapshots, huge examples, or noisy legacy folders.
+fn ensure_biturboignore(root: &Path) -> BiResult<()> {
+    let biturboignore = root.join(".biturboignore");
+    if biturboignore.exists() {
+        return Ok(());
+    }
+
+    let mut content = String::from(
+        "# biTurbo ignore file\n         # Patterns use gitignore syntax and are applied only by biTurbo ingest.\n         # This file was created from .gitignore on first ingest.\n         # Add files/folders here that should remain in git but stay out of semantic memory.\n\n",
+    );
+
+    let gitignore = root.join(".gitignore");
+    if gitignore.exists() {
+        let gitignore_content = std::fs::read_to_string(&gitignore)
+            .map_err(|e| BiError::Ingest(format!("failed to read {}: {e}", gitignore.display())))?;
+        content.push_str("# --- copied from .gitignore ---\n");
+        content.push_str(&gitignore_content);
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+    } else {
+        content.push_str("# Examples:\n");
+        content.push_str("# dist/\n# target/\n# generated/\n# **/*.snap\n");
+    }
+
+    std::fs::write(&biturboignore, content).map_err(|e| {
+        BiError::Ingest(format!("failed to write {}: {e}", biturboignore.display()))
+    })?;
+
+    Ok(())
+}
+
 #[derive(Clone)]
 struct PendingChunk {
     uid: String,
@@ -150,6 +187,8 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         ..Default::default()
     };
 
+    ensure_biturboignore(root)?;
+
     emit_progress(state, project_id, "scanning", 0, 1, None, 0);
 
     let files: Vec<PathBuf> = WalkBuilder::new(root)
@@ -159,6 +198,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         .git_global(true)
         .git_exclude(true)
         .ignore(true)
+        .add_custom_ignore_filename(".biturboignore")
         .hidden(false)
         .build()
         .filter_map(|r| r.ok())

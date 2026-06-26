@@ -423,6 +423,20 @@ fn resolve_project_from_args(state: &AppState, args: &Value) -> BiResult<String>
     project::resolve_project_id(state, project_id, root_path)
 }
 
+const RECALL_CONTEXT_MAX_CHARS: usize = 12_000;
+const RECALL_ITEM_MAX_CHARS: usize = 1_800;
+
+fn trim_for_context(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let mut out: String = trimmed.chars().take(max_chars).collect();
+    out.push_str("\n… <truncated>");
+    out
+}
+
 fn format_context_block(hits: &[MemoryWithScore]) -> String {
     if hits.is_empty() {
         return "<biTurboContext>no relevant memories</biTurboContext>".into();
@@ -467,8 +481,13 @@ fn format_context_block(hits: &[MemoryWithScore]) -> String {
             s.push_str(&format!("location={path}{range}{language}\n"));
         }
 
-        s.push_str(h.memory.content.trim());
+        s.push_str(trim_for_context(&h.memory.content, RECALL_ITEM_MAX_CHARS).as_str());
         s.push_str("\n\n");
+
+        if s.chars().count() >= RECALL_CONTEXT_MAX_CHARS {
+            s.push_str("… <context budget reached>\n");
+            break;
+        }
     }
     s.push_str("</biTurboContext>");
     s
