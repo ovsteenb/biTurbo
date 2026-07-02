@@ -267,6 +267,11 @@ pub fn search(
     k: usize,
     mem_type: Option<&str>,
 ) -> BiResult<Vec<MemoryWithScore>> {
+    // Reject empty/whitespace-only queries early
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    
     state.embedder.release_if_idle();
     let k = k.clamp(1, 100);
     if let Some(mem_type) = mem_type {
