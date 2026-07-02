@@ -11,7 +11,7 @@ Persistent · project-scoped · semantic · MCP-native.
 <br/>
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)
-[![Rust 1.77+](https://img.shields.io/badge/rust-1.77%2B-D4A574.svg)](https://www.rust-lang.org)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-D4A574.svg)](https://www.rust-lang.org)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
 [![MCP](https://img.shields.io/badge/MCP-19%20tools-C7A0E0.svg)](#mcp-tools)
 [![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
@@ -50,19 +50,19 @@ Every AI coding session starts blank. biTurbo gives your agents **persistent, pr
 
 ## Install
 
-Requires: **pnpm 11+**, **node 20+**, **rustc 1.77+**, **macOS / Linux** (Windows untested).
+Requires: **pnpm 11+**, **node 20+**, **rustc 1.88+**, **macOS / Linux** (Windows untested).
 
 ```bash
 # 1. Clone & enter
-git clone https://github.com/RyanCodrai/biturbo.git
-cd biturbo
+git clone https://github.com/ltfysl/biTurbo.git
+cd biTurbo
 
 # 2. JS deps
 pnpm install
 
-# 3. Rust binary (release)
+# 3. Rust MCP binary
 pnpm mcp:build           # writes target/debug/biturbo-mcp
-# or for max speed:
+# or for a release build:
 cd src-tauri && cargo build --release --bin biturbo-mcp
 ```
 
@@ -117,7 +117,7 @@ pnpm mcp:test
 pnpm tauri:dev
 ```
 
-Opens the Tauri 2 window. First launch downloads `BGE-small-en` (~30 MB) into your OS cache — next launches are instant.
+Opens the Tauri 2 window. First semantic operation downloads `BGE-small-en` (~30 MB) into your OS cache — subsequent semantic operations reuse the cached model.
 
 | View | What it does |
 |---|---|
@@ -167,6 +167,8 @@ Full ruleset, anti-patterns, and tool reference: see [INSTRUCTIONS.md](./INSTRUC
 
 ### MCP tools (19)
 
+These are the stable tools exposed to agents. The internal dispatcher may contain additional development-only helpers that are not part of the public MCP surface.
+
 | | | | |
 |---|---|---|---|
 | `remember` | `forget` | `update` | `get_memory` |
@@ -213,7 +215,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 | DB | SQLite + r2d2 + rusqlite | Local, WAL, zero-config |
 | Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
 | Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal/CPU, ~30 MB model |
-| MCP | rmcp 1.7 (official Rust SDK) | First-class stdio, macros, server handler |
+| MCP | stdio JSON-RPC | Lightweight hand-rolled MCP transport, no SDK runtime dependency |
 | Tree-sitter | 0.25 + lang crates | rust / ts / js / py / go, per-function chunks, structural code search |
 
 ---
@@ -282,3 +284,22 @@ biTurbo/
 ## License
 
 MIT.
+
+
+## Recall evals
+
+biTurbo includes a small recall quality harness for V2 work.
+
+```bash
+pnpm mcp:build
+pnpm recall:eval
+```
+
+The eval seeds a temporary project from `evals/recall-golden.json`, runs `search` and `recall_for_context`, then reports `recall@k` and context-term failures. Extend the golden file with real project memories whenever recall behavior changes.
+
+## Recall ranking
+
+Recall uses hybrid vector + SQLite FTS retrieval, then applies a cheap second-stage reranker before formatting context.
+
+The reranker keeps semantic relevance as the base score, then adds small boosts for exact query-term matches in content, file path, tags, and language, plus gentle boosts for recent, important, and repeatedly accessed memories. This makes recall feel smarter without adding a heavy cross-encoder or extra model.
+

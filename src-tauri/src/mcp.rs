@@ -65,7 +65,7 @@ async fn dispatch(state: &Arc<AppState>, req: JsonRpcRequest) -> Value {
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "biTurbo", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "## biTurbo Memory Layer — Instructions\n\nYou have access to biTurbo, a persistent semantic memory layer via MCP.\n\n## Core loop (MANDATORY — follow this every turn):\n1. **RECALL** — call `recall_for_context(query=<user msg>, project_id=<current>, k=8)`.\n2. **ANSWER** — respond using recalled context.\n3. **REMEMBER** — call `remember()` after every response to store durable information.\n\n## When to `remember` (call **after every response**):\n- ✅ User states a fact about themselves/environment/project → `fact`\n- ✅ You make a decision with rationale → `decision`\n- ✅ User expresses a preference (style, verbosity, tools) → `preference`\n- ✅ User corrects you → `fact` with `supersedes`\n- ✅ You discover a codebase pattern → `pattern`\n- ✅ Something noteworthy happened → `episode`\n- ✅ Meta-observation about user or work → `reflection`\n- ❌ Transient state — don't remember\n- ❌ Public knowledge any LLM knows — don't remember\n- ❌ Secrets, tokens, PII — **NEVER**\n\nIf unsure: \"Would future-me in 6 months want to know this?\" If yes, remember.\n\n## Memory types:\n- `fact` — verifiable facts\n- `decision` — choices + why\n- `preference` — how user wants things\n- `pattern` — repeatable approaches\n- `episode` — past events (include timestamp)\n- `reflection` — meta-observations\n- `code` — set by ingest_project only\n\n## Importance (0-1):\n- 0.8-1.0: cross-project rules, key decisions\n- 0.5-0.7: typical (default 0.6)\n- 0.2-0.4: specific/stale details\n\n## Tags: 1-3 per memory. Good: `auth`, `ui`, `db`, `convention`, `api`. Bad: `important`, `todo`.\n\n## Session lifecycle:\n- START → `register_agent(name, kind)`, `list_projects()`\n- EVERY TURN → recall → answer → remember\n- END → `consolidate(project_id)`, final `remember`\n\n## Multi-project:\n- Always pass `project_id`. Isolated per project.\n- `project_id=\"default\"` for cross-cutting facts.\n\n## Anti-patterns:\n- Don't dump 10k memories — use recall_for_context k=5-10\n- Don't skip recall — amnesia is worse than no tool\n- Don't remember the obvious (Cargo, Git, syntax)\n- Don't forget prematurely — knowledge dies\n- Never cross-project leak — right project_id always\n- Never store secrets, tokens, PII\n\n## Tools (19):\nremember, forget, update, get_memory, search, list, list_tags,\nrecall_for_context, list_projects, get_project, create_project,\ndelete_project, ingest_project, consolidate, consolidate_status,\nstats, bootstrap, recent_activity, register_agent"
+                "instructions": "## biTurbo Memory Layer — Instructions\n\nYou have access to biTurbo, a persistent semantic memory layer via MCP.\n\n## Core loop:\n1. **RECALL** — call `recall_for_context(query=<user msg>, project_id=<current>, k=8)`.\n2. **ANSWER** — respond using recalled context.\n3. **REMEMBER** — store only durable, useful information.\n\n## When to `remember`:\n- ✅ User states a fact about themselves/environment/project → `fact`\n- ✅ You make a decision with rationale → `decision`\n- ✅ User expresses a preference (style, verbosity, tools) → `preference`\n- ✅ User corrects you → `fact` with `supersedes`\n- ✅ You discover a codebase pattern → `pattern`\n- ✅ Something noteworthy happened → `episode`\n- ✅ Meta-observation about user or work → `reflection`\n- ❌ Transient state — don't remember\n- ❌ Public knowledge any LLM knows — don't remember\n- ❌ Secrets, tokens, PII — **NEVER**\n\nIf unsure: \"Would future-me in 6 months want to know this?\" If yes, remember.\n\n## Memory types:\n- `fact` — verifiable facts\n- `decision` — choices + why\n- `preference` — how user wants things\n- `pattern` — repeatable approaches\n- `episode` — past events (include timestamp)\n- `reflection` — meta-observations\n- `code` — set by ingest_project only\n\n## Importance (0-1):\n- 0.8-1.0: cross-project rules, key decisions\n- 0.5-0.7: typical (default 0.6)\n- 0.2-0.4: specific/stale details\n\n## Tags: 1-3 per memory. Good: `auth`, `ui`, `db`, `convention`, `api`. Bad: `important`, `todo`.\n\n## Session lifecycle:\n- START → `register_agent(name, kind)`, `list_projects()`\n- EVERY TURN → recall before non-trivial work\n- END → `consolidate(project_id)`, final `remember`\n\n## Multi-project:\n- Always pass `project_id`. Isolated per project.\n- `project_id=\"default\"` for cross-cutting facts.\n\n## Anti-patterns:\n- Don't dump 10k memories — use recall_for_context k=5-10\n- Don't skip recall for project-specific work — amnesia is worse than no tool\n- Don't remember the obvious (Cargo, Git, syntax)\n- Don't remember every response — memory quality matters more than volume\n- Don't forget prematurely — knowledge dies\n- Never cross-project leak — right project_id always\n- Never store secrets, tokens, PII\n\n## Tools (19):\nremember, forget, update, get_memory, search, list, list_tags,\nrecall_for_context, list_projects, get_project, create_project,\ndelete_project, ingest_project, consolidate, consolidate_status,\nstats, bootstrap, recent_activity, register_agent"
             }),
         ),
         "notifications/initialized" => json!({}),
@@ -143,7 +143,7 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "search" => {
             let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
-            let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let k = bounded_k(&args, 10, 100);
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
             let hits: Vec<MemoryWithScore> =
                 memory::search(state, &project_id, &query, k, mem_type)?;
@@ -165,7 +165,7 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "recall_for_context" => {
             let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
-            let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+            let k = bounded_k(&args, 8, 20);
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
             let hits = memory::search(state, &project_id, &query, k, mem_type)?;
             text(&format_context_block(&hits))
@@ -385,11 +385,17 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                         .and_then(|line| line.strip_prefix("projectName="))
                         .map(String::from);
                     match project_name {
-                        Some(name) => text(&serde_json::to_string_pretty(&json!({ "projectName": name }))?),
-                        None => text(&serde_json::to_string_pretty(&json!({ "error": "projectName not set in .biTurbo file" }))?),
+                        Some(name) => text(&serde_json::to_string_pretty(
+                            &json!({ "projectName": name }),
+                        )?),
+                        None => text(&serde_json::to_string_pretty(
+                            &json!({ "error": "projectName not set in .biTurbo file" }),
+                        )?),
                     }
                 }
-                Err(_) => text(&serde_json::to_string_pretty(&json!({ "error": ".biTurbo file not found" }))?),
+                Err(_) => text(&serde_json::to_string_pretty(
+                    &json!({ "error": ".biTurbo file not found" }),
+                )?),
             }
         }
         other => return Err(BiError::Invalid(format!("unknown tool: {other}"))),
@@ -404,26 +410,84 @@ fn arg_str(args: &Value, key: &str) -> BiResult<String> {
         .ok_or_else(|| BiError::Invalid(format!("missing string arg: {key}")))
 }
 
+fn bounded_k(args: &Value, default: u64, max: u64) -> usize {
+    args.get("k")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(default)
+        .clamp(1, max) as usize
+}
+
 fn resolve_project_from_args(state: &AppState, args: &Value) -> BiResult<String> {
     let project_id = args.get("project_id").and_then(|v| v.as_str());
     let root_path = args.get("root_path").and_then(|v| v.as_str());
     project::resolve_project_id(state, project_id, root_path)
 }
 
+const RECALL_CONTEXT_MAX_CHARS: usize = 12_000;
+const RECALL_ITEM_MAX_CHARS: usize = 1_800;
+
+fn trim_for_context(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let mut out: String = trimmed.chars().take(max_chars).collect();
+    out.push_str("\n… <truncated>");
+    out
+}
+
 fn format_context_block(hits: &[MemoryWithScore]) -> String {
     if hits.is_empty() {
         return "<biTurboContext>no relevant memories</biTurboContext>".into();
     }
+
     let mut s = String::from("<biTurboContext>\n");
     for (i, h) in hits.iter().enumerate() {
+        let tags = if h.memory.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" · tags={}", h.memory.tags.join(","))
+        };
+        let source = h
+            .memory
+            .source_agent
+            .as_deref()
+            .map(|a| format!(" · source={a}"))
+            .unwrap_or_default();
+
         s.push_str(&format!(
-            "[{}] ({} · score={:.3} · importance={:.2})\n{}\n\n",
+            "[{}] uid={} · type={} · score={:.3} · importance={:.2}{}{}\n",
             i + 1,
+            h.memory.uid,
             h.memory.mem_type,
             h.score,
             h.memory.importance,
-            h.memory.content.trim()
+            tags,
+            source,
         ));
+
+        if let Some(path) = h.memory.file_path.as_deref() {
+            let range = match (h.memory.start_line, h.memory.end_line) {
+                (Some(start), Some(end)) => format!(":{start}-{end}"),
+                _ => String::new(),
+            };
+            let language = h
+                .memory
+                .language
+                .as_deref()
+                .map(|lang| format!(" · lang={lang}"))
+                .unwrap_or_default();
+            s.push_str(&format!("location={path}{range}{language}\n"));
+        }
+
+        s.push_str(trim_for_context(&h.memory.content, RECALL_ITEM_MAX_CHARS).as_str());
+        s.push_str("\n\n");
+
+        if s.chars().count() >= RECALL_CONTEXT_MAX_CHARS {
+            s.push_str("… <context budget reached>\n");
+            break;
+        }
     }
     s.push_str("</biTurboContext>");
     s

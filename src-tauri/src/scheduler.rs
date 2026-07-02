@@ -24,6 +24,7 @@ pub struct ConsolidateStatus {
     pub queued: bool,
 }
 
+#[derive(Default)]
 struct Shared {
     last_run_at: Option<i64>,
     last_report: Option<ConsolidateReport>,
@@ -31,18 +32,6 @@ struct Shared {
     last_finish: Option<Instant>,
     /// A manual job is queued waiting for the current run to finish.
     queued: bool,
-}
-
-impl Default for Shared {
-    fn default() -> Self {
-        Self {
-            last_run_at: None,
-            last_report: None,
-            running: false,
-            last_finish: None,
-            queued: false,
-        }
-    }
 }
 
 static STATE: once_cell::sync::Lazy<Arc<Mutex<Shared>>> =

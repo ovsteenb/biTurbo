@@ -1,6 +1,7 @@
 use crate::db::log_activity;
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +28,7 @@ impl MemType {
             MemType::Code => "code",
         }
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> BiResult<Self> {
         Ok(match s {
             "fact" => Self::Fact,
@@ -106,25 +108,30 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             "project '{project_id}' does not exist — create it first with create_project"
         ))
     })?;
-    let mem_type = input.mem_type.as_deref().unwrap_or("fact").to_string();
+    let mem_type = MemType::from_str(input.mem_type.as_deref().unwrap_or("fact"))?
+        .as_str()
+        .to_string();
     let importance = input.importance.unwrap_or(0.5).clamp(0.0, 1.0);
     let uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let tags_json = serde_json::to_string(&input.tags.clone().unwrap_or_default())?;
 
     state.db.write(|tx| {
-        if let Some(old_uid) = &input.supersedes {
-            tx.execute(
-                "UPDATE memories SET superseded_by = id, updated_at = ?1
-                 WHERE uid = ?2 AND superseded_by IS NULL",
-                rusqlite::params![now, old_uid],
-            )?;
-        }
+        let supersedes_id: Option<i64> = match input.supersedes.as_deref() {
+            Some(old_uid) => tx
+                .query_row(
+                    "SELECT id FROM memories WHERE uid = ?1 AND project_id = ?2 AND superseded_by IS NULL",
+                    rusqlite::params![old_uid, project_id],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            None => None,
+        };
         tx.execute(
             "INSERT INTO memories(uid, project_id, mem_type, content, tags, source_agent,
                                   importance, created_at, updated_at, last_access,
-                                  access_count, file_path, start_line, end_line, language)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?8,0,?9,?10,?11,?12)",
+                                  access_count, file_path, start_line, end_line, language, supersedes)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?8,0,?9,?10,?11,?12,?13)",
             rusqlite::params![
                 uid,
                 project_id,
@@ -138,8 +145,18 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
                 input.start_line,
                 input.end_line,
                 input.language,
+                supersedes_id,
             ],
         )?;
+        let new_id = tx.last_insert_rowid();
+        if let Some(old_id) = supersedes_id {
+            tx.execute(
+                "UPDATE memories
+                 SET superseded_by = ?1, updated_at = ?2
+                 WHERE id = ?3 AND superseded_by IS NULL",
+                rusqlite::params![new_id, now, old_id],
+            )?;
+        }
         tx.execute(
             "UPDATE projects SET memory_count = memory_count + 1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![now, project_id],
@@ -205,10 +222,10 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
         .content
         .clone()
         .unwrap_or_else(|| existing.content.clone());
-    let new_type = input
-        .mem_type
-        .clone()
-        .unwrap_or_else(|| existing.mem_type.clone());
+    let new_type = match input.mem_type.clone() {
+        Some(mem_type) => MemType::from_str(&mem_type)?.as_str().to_string(),
+        None => existing.mem_type.clone(),
+    };
     let new_tags_json = match input.tags.clone() {
         Some(t) => serde_json::to_string(&t)?,
         None => serde_json::to_string(&existing.tags)?,
@@ -251,6 +268,10 @@ pub fn search(
     mem_type: Option<&str>,
 ) -> BiResult<Vec<MemoryWithScore>> {
     state.embedder.release_if_idle();
+    let k = k.clamp(1, 100);
+    if let Some(mem_type) = mem_type {
+        MemType::from_str(mem_type)?;
+    }
     let project_id = if project_id.is_empty() {
         state.default_project_id.clone()
     } else {
@@ -258,9 +279,19 @@ pub fn search(
     };
 
     let kk = (k * 3).max(30);
-    let vec_hits = state.embed_and_search(&project_id, query, kk, None)?;
-
     let conn = state.db.conn()?;
+
+    let allowlist_uids: Option<Vec<String>> = if let Some(t) = mem_type {
+        let mut stmt = conn.prepare_cached(
+            "SELECT uid FROM memories WHERE project_id = ?1 AND mem_type = ?2 AND superseded_by IS NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![project_id, t], |r| r.get::<_, String>(0))?;
+        Some(rows.filter_map(|r| r.ok()).collect())
+    } else {
+        None
+    };
+
+    let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist_uids.as_deref())?;
     let fts_uids = fts_search(&conn, query, &project_id, mem_type, kk)?;
 
     let mut fused: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
@@ -278,14 +309,15 @@ pub fn search(
 
     let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.truncate(k);
+    // Keep extra candidates because superseded memories are filtered out in SQL below.
+    ranked.truncate(k.saturating_mul(2).max(k));
 
     if ranked.is_empty() {
         return Ok(Vec::new());
     }
 
     let n = ranked.len();
-    let placeholders = std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
     let select_sql = format!(
         "SELECT uid, project_id, mem_type, content, tags, source_agent, importance,
                 supersedes, superseded_by, created_at, updated_at, last_access,
@@ -314,8 +346,7 @@ pub fn search(
         .collect();
     let top_uids: Vec<String> = hit_uids.iter().take(5).cloned().collect();
     if !hit_uids.is_empty() {
-        let placeholders = std::iter::repeat("?")
-            .take(hit_uids.len())
+        let placeholders = std::iter::repeat_n("?", hit_uids.len())
             .collect::<Vec<_>>()
             .join(",");
         state.db.write(|tx| {
@@ -353,6 +384,7 @@ pub fn search(
                 }
             })
         })
+        .take(k)
         .collect())
 }
 
@@ -444,25 +476,6 @@ fn sanitize_fts_query(q: &str, combine: FtsCombine) -> String {
         FtsCombine::Or => " OR ",
     };
     tokens.join(sep)
-}
-
-#[cfg(test)]
-mod search_tests {
-    use super::*;
-
-    #[test]
-    fn fts_or_query_matches_any_token() {
-        let q = sanitize_fts_query("hybrid search turbovec", FtsCombine::Or);
-        assert!(q.contains(" OR "));
-        assert!(q.contains("\"hybrid\"*"));
-    }
-
-    #[test]
-    fn fts_skips_single_char_tokens() {
-        let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
-        assert!(!q.contains("\"a\"*"));
-        assert!(q.contains("\"MCP\"*"));
-    }
 }
 
 pub fn list(
@@ -576,4 +589,31 @@ fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         end_line: r.get(15)?,
         language: r.get(16)?,
     })
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn fts_or_query_matches_any_token() {
+        let q = sanitize_fts_query("hybrid search turbovec", FtsCombine::Or);
+        assert!(q.contains(" OR "));
+        assert!(q.contains("\"hybrid\"*"));
+    }
+
+    #[test]
+    fn fts_skips_single_char_tokens() {
+        let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
+        assert!(!q.contains("\"a\"*"));
+        assert!(q.contains("\"MCP\"*"));
+    }
+
+    #[test]
+    fn fts_query_strips_quotes_and_punctuation() {
+        let q = sanitize_fts_query(r#"auth: "login-flow"!"#, FtsCombine::Or);
+        assert!(q.contains("\"auth\"*"));
+        assert!(q.contains("\"login-flow\"*"));
+        assert!(!q.contains("!"));
+    }
 }

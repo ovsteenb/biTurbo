@@ -114,7 +114,7 @@ If you don't know the project, **ask the user** or use `list_projects` and pick 
 
 ## 6. When to `remember`
 
-Call `remember` proactively, not just on explicit user ask. The following are durable signals:
+Call `remember` proactively, but only for information that is durable, non-obvious, and likely useful in a future session. The following are durable signals:
 
 - ✅ User states a preference: "I prefer X over Y" → `remember` as `preference`.
 - ✅ You and the user make a decision together → `remember` as `decision` with reasoning.
@@ -128,6 +128,7 @@ Call `remember` proactively, not just on explicit user ask. The following are du
 - ❌ Transient task state ("I'm editing line 42") → don't remember.
 - ❌ Public knowledge any LLM knows ("Rust uses Cargo") → don't remember.
 - ❌ Secrets, tokens, passwords → **never remember**.
+- ❌ Routine assistant responses with no durable new information → don't remember.
 
 If unsure whether something is durable, ask: "Would future-me in 6 months want to know this?"
 If yes, remember.

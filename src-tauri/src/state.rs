@@ -94,7 +94,8 @@ impl AppState {
                         let _ = idx.maybe_flush(std::time::Duration::from_millis(300), false);
                     }
                     // 2) evict old indices (not touched in 10 min or over budget)
-                    let _ = state_for_thread.evict_stale_indices(std::time::Duration::from_secs(600));
+                    let _ =
+                        state_for_thread.evict_stale_indices(std::time::Duration::from_secs(600));
                     let _ = state_for_thread.evict_if_over_budget();
                 })
                 .ok();
@@ -137,7 +138,9 @@ impl AppState {
         {
             let indices = self.indices.read();
             if let Some(idx) = indices.get(project_id).cloned() {
-                self.index_access_times.lock().insert(project_id.to_string(), Instant::now());
+                self.index_access_times
+                    .lock()
+                    .insert(project_id.to_string(), Instant::now());
                 return Ok(idx);
             }
         }
@@ -163,7 +166,9 @@ impl AppState {
         {
             let mut indices = self.indices.write();
             indices.insert(project_id.to_string(), idx.clone());
-            self.index_access_times.lock().insert(project_id.to_string(), Instant::now());
+            self.index_access_times
+                .lock()
+                .insert(project_id.to_string(), Instant::now());
         }
         let _ = self.evict_if_over_budget();
         Ok(idx)
@@ -195,18 +200,20 @@ impl AppState {
             }
             let lru_pid = {
                 let times = self.index_access_times.lock();
-                let mut candidates: Vec<(String, Instant)> = times
-                    .iter()
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect();
-                candidates.sort_by(|a, b| a.1.cmp(&b.1));
+                let mut candidates: Vec<(String, Instant)> =
+                    times.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                candidates.sort_by_key(|a| a.1);
                 candidates.into_iter().map(|(k, _)| k).next()
             };
             if let Some(pid) = lru_pid {
                 let mut indices = self.indices.write();
                 indices.remove(&pid);
                 self.index_access_times.lock().remove(&pid);
-                tracing::info!("evicted index '{}' to stay under {} MiB budget", pid, budget / 1024 / 1024);
+                tracing::info!(
+                    "evicted index '{}' to stay under {} MiB budget",
+                    pid,
+                    budget / 1024 / 1024
+                );
             } else {
                 break;
             }
@@ -286,7 +293,24 @@ impl AppState {
 
     /// Backfill the vector index when SQLite has more active memories than the on-disk index.
     pub fn repair_index_if_needed(&self, project_id: &str) -> BiResult<()> {
-        let db_rows: Vec<(String, String)> = {
+        let idx = self.get_or_load_index(project_id)?;
+
+        // Hot path: most searches should not scan every memory row. Count first,
+        // and only walk rows when SQLite has more active memories than the loaded index.
+        let active_count: usize = {
+            let conn = self.db.conn()?;
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
+                rusqlite::params![project_id],
+                |r| r.get::<_, i64>(0),
+            )? as usize
+        };
+
+        if idx.len() >= active_count {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String)> = {
             let conn = self.db.conn()?;
             let mut stmt = conn.prepare(
                 "SELECT uid, content FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
@@ -294,16 +318,11 @@ impl AppState {
             let rows = stmt.query_map(rusqlite::params![project_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?;
-            rows.filter_map(|r| r.ok()).collect()
+            rows.filter_map(|r| r.ok())
+                .filter(|(uid, _)| !idx.contains_uid(uid))
+                .collect()
         };
-        let idx = self.get_or_load_index(project_id)?;
-        if idx.len() >= db_rows.len() {
-            return Ok(());
-        }
-        let rows: Vec<(String, String)> = db_rows
-            .into_iter()
-            .filter(|(uid, _)| !idx.contains_uid(uid))
-            .collect();
+
         if rows.is_empty() {
             return Ok(());
         }

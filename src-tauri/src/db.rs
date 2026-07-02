@@ -346,8 +346,7 @@ pub fn code_uids_for_file(
 
 pub fn delete_memories_by_uids(tx: &rusqlite::Transaction<'_>, uids: &[String]) -> BiResult<()> {
     for chunk in uids.chunks(400) {
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
+        let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!("DELETE FROM memories WHERE uid IN ({placeholders})");
@@ -365,8 +364,7 @@ pub fn delete_code_edges_for_files(
     file_uids: &[String],
 ) -> BiResult<()> {
     for chunk in file_uids.chunks(400) {
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
+        let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(

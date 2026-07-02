@@ -181,18 +181,10 @@ pub struct WatchStatus {
     pub watching: Vec<String>,
 }
 
+#[derive(Default)]
 struct WatchState {
     running: bool,
     queued: bool,
-}
-
-impl Default for WatchState {
-    fn default() -> Self {
-        Self {
-            running: false,
-            queued: false,
-        }
-    }
 }
 
 type WatchHandle = Arc<Mutex<Option<notify::RecommendedWatcher>>>;
@@ -240,8 +232,8 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
     let state_for_event = state_for_cb.clone();
 
     let mut watcher =
-        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
-            Ok(event) => {
+        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
                 if !matches!(
                     event.kind,
                     notify::EventKind::Create(_)
@@ -281,7 +273,6 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
                     }
                 });
             }
-            Err(_) => {}
         }) {
             Ok(w) => w,
             Err(_) => return,
