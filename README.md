@@ -13,7 +13,7 @@ Persistent · project-scoped · semantic · MCP-native.
 [![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-D4A574.svg)](https://www.rust-lang.org)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
-[![MCP](https://img.shields.io/badge/MCP-19%20tools-C7A0E0.svg)](#mcp-tools)
+[![MCP](https://img.shields.io/badge/MCP-20%20tools-C7A0E0.svg)](#mcp-tools)
 [![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
 [![pnpm 11](https://img.shields.io/badge/pnpm-11-E8E2D6.svg)](https://pnpm.io)
 
@@ -165,7 +165,7 @@ The first time an agent connects, it should:
 
 Full ruleset, anti-patterns, and tool reference: see [INSTRUCTIONS.md](./INSTRUCTIONS.md).
 
-### MCP tools (19)
+### MCP tools (20)
 
 These are the stable tools exposed to agents. The internal dispatcher may contain additional development-only helpers that are not part of the public MCP surface.
 
@@ -174,7 +174,7 @@ These are the stable tools exposed to agents. The internal dispatcher may contai
 | `remember` | `forget` | `update` | `get_memory` |
 | `search` | `list` | `list_tags` | `recall_for_context` |
 | `list_projects` | `get_project` | `create_project` | `delete_project` |
-| `ingest_project` | `consolidate` | `consolidate_status` | |
+| `ingest_project` | `consolidate` | `consolidate_status` | `get_project_name_from_file` |
 | `stats` | `bootstrap` | `recent_activity` | `register_agent` |
 
 ---

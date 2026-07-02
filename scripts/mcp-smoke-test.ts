@@ -362,6 +362,12 @@ const tests: TestCase[] = [
     expect: () => true,
   },
   {
+    name: "get_project_name_from_file",
+    tool: "get_project_name_from_file",
+    args: { root_path: "/nonexistent/path" },
+    expect: () => true,
+  },
+  {
     name: "delete_project",
     tool: "delete_project",
     args: { project_id: TEST_PROJECT },
