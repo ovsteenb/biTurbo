@@ -202,7 +202,7 @@ impl AppState {
                 let times = self.index_access_times.lock();
                 let mut candidates: Vec<(String, Instant)> =
                     times.iter().map(|(k, v)| (k.clone(), *v)).collect();
-                candidates.sort_by(|a, b| a.1.cmp(&b.1));
+                candidates.sort_by_key(|a| a.1);
                 candidates.into_iter().map(|(k, _)| k).next()
             };
             if let Some(pid) = lru_pid {

@@ -106,7 +106,10 @@ fn ensure_biturboignore(root: &Path) -> BiResult<()> {
     }
 
     let mut content = String::from(
-        "# biTurbo ignore file\n         # Patterns use gitignore syntax and are applied only by biTurbo ingest.\n         # This file was created from .gitignore on first ingest.\n         # Add files/folders here that should remain in git but stay out of semantic memory.\n\n",
+        "# biTurbo ignore file\n\
+         # Patterns use gitignore syntax and are applied only by biTurbo ingest.\n\
+         # This file was created from .gitignore on first ingest.\n\
+         # Add files/folders here that should remain in git but stay out of semantic memory.\n\n",
     );
 
     let gitignore = root.join(".gitignore");
@@ -252,7 +255,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
             .par_iter()
             .map(|path| {
                 let done = progress.fetch_add(1, Ordering::Relaxed);
-                if done % PROGRESS_EVERY == 0 {
+                if done.is_multiple_of(PROGRESS_EVERY) {
                     emit_progress(
                         state,
                         project_id,
