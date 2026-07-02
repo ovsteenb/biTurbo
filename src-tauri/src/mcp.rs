@@ -424,17 +424,85 @@ fn resolve_project_from_args(state: &AppState, args: &Value) -> BiResult<String>
 }
 
 const RECALL_CONTEXT_MAX_CHARS: usize = 12_000;
-const RECALL_ITEM_MAX_CHARS: usize = 1_800;
+const RECALL_ITEM_MAX_CHARS: usize = 1_200;
 
+/// Map memory type string to single-char code for compact output.
+fn type_code(mem_type: &str) -> char {
+    match mem_type {
+        "fact" => 'f',
+        "decision" => 'd',
+        "preference" => 'p',
+        "pattern" => 'P',
+        "episode" => 'e',
+        "reflection" => 'r',
+        "code" => 'c',
+        _ => '?',
+    }
+}
+
+/// Smart truncation at sentence boundary. Falls back to hard cut if no boundary found.
 fn trim_for_context(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= max_chars {
         return trimmed.to_string();
     }
 
-    let mut out: String = trimmed.chars().take(max_chars).collect();
-    out.push_str("\n… <truncated>");
+    // Try to cut at a sentence boundary (`.`, `!`, `?`, `\n`) near max_chars
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut cut = max_chars.min(chars.len());
+
+    // Walk backwards from max_chars looking for sentence end
+    let search_start = max_chars.saturating_sub(max_chars / 3);
+    for i in (search_start..cut).rev() {
+        if i < chars.len() && matches!(chars[i], '.' | '!' | '?' | '\n') {
+            cut = i + 1;
+            break;
+        }
+    }
+
+    let mut out: String = chars[..cut.min(chars.len())].iter().collect();
+    out.push_str("…");
     out
+}
+
+/// Compute word-level Jaccard similarity between two texts (cheap proxy for semantic overlap).
+fn jaccard_similarity(a: &str, b: &str) -> f32 {
+    let words_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
+    let words_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
+    if words_a.is_empty() && words_b.is_empty() {
+        return 1.0;
+    }
+    let intersection = words_a.intersection(&words_b).count();
+    let union = words_a.union(&words_b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f32 / union as f32
+}
+
+/// Filter near-duplicate hits: if two memories have Jaccard similarity > threshold,
+/// keep only the higher-scored one. Prevents wasting context budget on redundant info.
+fn deduplicate_hits(hits: &[MemoryWithScore], threshold: f32) -> Vec<MemoryWithScore> {
+    let mut kept: Vec<MemoryWithScore> = Vec::with_capacity(hits.len());
+    let mut skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for i in 0..hits.len() {
+        if skip.contains(&i) {
+            continue;
+        }
+        for j in (i + 1)..hits.len() {
+            if skip.contains(&j) {
+                continue;
+            }
+            let sim = jaccard_similarity(&hits[i].memory.content, &hits[j].memory.content);
+            if sim >= threshold {
+                // Keep the one with higher score (already sorted descending)
+                skip.insert(j);
+            }
+        }
+        kept.push(hits[i].clone());
+    }
+    kept
 }
 
 fn format_context_block(hits: &[MemoryWithScore]) -> String {
@@ -442,54 +510,42 @@ fn format_context_block(hits: &[MemoryWithScore]) -> String {
         return "<biTurboContext>no relevant memories</biTurboContext>".into();
     }
 
-    let mut s = String::from("<biTurboContext>\n");
-    for (i, h) in hits.iter().enumerate() {
-        let tags = if h.memory.tags.is_empty() {
-            String::new()
-        } else {
-            format!(" · tags={}", h.memory.tags.join(","))
-        };
-        let source = h
-            .memory
-            .source_agent
-            .as_deref()
-            .map(|a| format!(" · source={a}"))
-            .unwrap_or_default();
+    // Deduplicate near-identical memories before formatting
+    let deduped = deduplicate_hits(hits, 0.55);
 
+    let mut s = String::from("<ctx>\n");
+    for (i, h) in deduped.iter().enumerate() {
+        let tc = type_code(&h.memory.mem_type);
+        let tags = h.memory.tags.join(",");
+
+        // Compact single-line header: [N] type|score|importance|tags
         s.push_str(&format!(
-            "[{}] uid={} · type={} · score={:.3} · importance={:.2}{}{}\n",
+            "[{}] {}|{:.2}|{:.2}|{}\n",
             i + 1,
-            h.memory.uid,
-            h.memory.mem_type,
+            tc,
             h.score,
             h.memory.importance,
             tags,
-            source,
         ));
 
+        // Optional location line for code memories
         if let Some(path) = h.memory.file_path.as_deref() {
             let range = match (h.memory.start_line, h.memory.end_line) {
                 (Some(start), Some(end)) => format!(":{start}-{end}"),
                 _ => String::new(),
             };
-            let language = h
-                .memory
-                .language
-                .as_deref()
-                .map(|lang| format!(" · lang={lang}"))
-                .unwrap_or_default();
-            s.push_str(&format!("location={path}{range}{language}\n"));
+            let lang = h.memory.language.as_deref().unwrap_or("");
+            s.push_str(&format!("> {}{} {}\n", path, range, lang));
         }
 
         s.push_str(trim_for_context(&h.memory.content, RECALL_ITEM_MAX_CHARS).as_str());
-        s.push_str("\n\n");
+        s.push('\n');
 
         if s.chars().count() >= RECALL_CONTEXT_MAX_CHARS {
-            s.push_str("… <context budget reached>\n");
             break;
         }
     }
-    s.push_str("</biTurboContext>");
+    s.push_str("</ctx>");
     s
 }
 
