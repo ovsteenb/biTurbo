@@ -309,8 +309,8 @@ pub fn search(
 
     let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    // Keep extra candidates because superseded memories are filtered out in SQL below.
-    ranked.truncate(k.saturating_mul(2).max(k));
+    // Keep more candidates for reranking (k*4 gives reranker more to work with).
+    ranked.truncate(k.saturating_mul(4).max(k));
 
     if ranked.is_empty() {
         return Ok(Vec::new());
@@ -373,19 +373,30 @@ pub fn search(
         })?;
     }
 
-    Ok(ranked
+    // Second-stage reranking: boost scores based on term matches in content, tags, path, and language
+    let query_terms = tokenize_query(query);
+    let mut reranked: Vec<MemoryWithScore> = ranked
         .into_iter()
-        .filter_map(|(uid, score)| {
+        .enumerate()
+        .filter_map(|(rank, (uid, base_score))| {
             by_uid.remove(&uid).map(|memory| {
-                let boosted = score * (0.7 + 0.3 * memory.importance.clamp(0.0, 1.0));
+                let reranked_score = rerank_memory_score(base_score, &memory, &query_terms, rank);
                 MemoryWithScore {
                     memory,
-                    score: boosted,
+                    score: reranked_score,
                 }
             })
         })
-        .take(k)
-        .collect())
+        .collect();
+
+    // Re-sort by reranked score
+    reranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Ok(reranked.into_iter().take(k).collect())
 }
 
 fn fts_search(
@@ -562,6 +573,100 @@ pub fn list_tags(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(St
     let mut v: Vec<(String, i64)> = out.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(v)
+}
+
+/// Tokenize a query into normalized search terms.
+fn tokenize_query(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|t| t.to_lowercase())
+        .filter(|t| t.len() >= 2)
+        .collect()
+}
+
+/// Filter out common stopwords from query terms
+fn filter_stopwords(terms: &[String]) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+        "by", "from", "up", "about", "into", "through", "during", "before", "after", "above",
+        "below", "between", "among", "is", "was", "are", "were", "been", "be", "have", "has",
+        "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must",
+        "shall", "can", "need", "dare", "ought", "used", "how", "what", "when", "where", "why",
+        "which", "who", "whom", "whose", "this", "that", "these", "those", "i", "you", "he",
+        "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his", "its",
+        "our", "their", "myself", "yourself", "himself", "herself", "itself", "ourselves",
+        "themselves", "all", "each", "every", "both", "few", "more", "most", "other", "some",
+        "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+    ];
+
+    terms
+        .iter()
+        .filter(|term| !STOPWORDS.contains(&term.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Second-stage reranker: boost score based on term matches in content, tags, path, and language.
+/// Uses multiplicative boosts to refine rather than override the base RRF ranking.
+fn rerank_memory_score(base_score: f32, mem: &Memory, terms: &[String], _rank: usize) -> f32 {
+    let filtered_terms = filter_stopwords(terms);
+    if filtered_terms.is_empty() {
+        return base_score;
+    }
+
+    let mut boost_factor = 1.0;
+
+    // Content match boost (multiplicative boost per match)
+    let content_lower = mem.content.to_lowercase();
+    let content_matches = filtered_terms
+        .iter()
+        .filter(|t| content_lower.contains(t.as_str()))
+        .count();
+    if content_matches > 0 {
+        boost_factor *= 1.0 + (content_matches as f32 * 0.12);
+    }
+
+    // Tag match boost (bidirectional: query term in tag OR tag in query term)
+    let tag_matches = filtered_terms
+        .iter()
+        .filter(|term| {
+            mem.tags.iter().any(|tag| {
+                let tag_lower = tag.to_lowercase();
+                tag_lower.contains(term.as_str()) || term.contains(&tag_lower)
+            })
+        })
+        .count();
+    if tag_matches > 0 {
+        boost_factor *= 1.0 + (tag_matches as f32 * 0.20);
+    }
+
+    // Path match boost (multiplicative boost per match)
+    if let Some(path) = &mem.file_path {
+        let path_lower = path.to_lowercase();
+        let path_matches = filtered_terms
+            .iter()
+            .filter(|t| path_lower.contains(t.as_str()))
+            .count();
+        if path_matches > 0 {
+            boost_factor *= 1.0 + (path_matches as f32 * 0.15);
+        }
+    }
+
+    // Language match boost (small boost if language matches query)
+    if let Some(lang) = &mem.language {
+        let lang_lower = lang.to_lowercase();
+        if filtered_terms
+            .iter()
+            .any(|t| lang_lower.contains(t.as_str()))
+        {
+            boost_factor *= 1.08;
+        }
+    }
+
+    // Importance boost (small additive factor)
+    let importance_boost = mem.importance * 0.05;
+
+    base_score * boost_factor + importance_boost
 }
 
 fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
