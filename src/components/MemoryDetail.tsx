@@ -43,7 +43,8 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
         /* ignore */
       }
     })();
-  }, [memory.uid, memory.project_id, memory.content]);
+    // Only re-search when selecting a different memory, not on every edit.
+  }, [memory.uid, memory.project_id]);
 
   async function save() {
     try {

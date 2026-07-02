@@ -207,11 +207,6 @@ export function Graph() {
 
   const hoverNode = hover && data ? data.nodes.find((n) => n.uid === hover) : null;
 
-  function nodeRadius(n: GraphNode): number {
-    if (n.kind === "file") return 10 + Math.min(8, Math.sqrt(n.size));
-    return 4 + Math.min(6, Math.log2(n.size + 1) * 1.5);
-  }
-
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.1 : 0.9;

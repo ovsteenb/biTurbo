@@ -27,10 +27,11 @@ export function Sidebar() {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
   const agents = useApp((s) => s.agents);
-  const stats = useApp((s) => s.stats);
+  // Narrow subscription: only subscribe to total_memories, not the entire stats object.
+  const totalMem = useApp((s) => s.stats?.total_memories ?? 0);
+  const totalProjects = useApp((s) => s.stats?.total_projects ?? 0);
 
   const connectedAgents = agents.length;
-  const totalMem = stats?.total_memories ?? 0;
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-border-subtle bg-surface/40">
@@ -75,7 +76,7 @@ export function Sidebar() {
           <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-widest text-text-dim">
             <span>Projects</span>
             <span className="font-mono text-text-dim">
-              {stats?.total_projects ?? 0}
+              {totalProjects}
             </span>
           </div>
           <ProjectList />

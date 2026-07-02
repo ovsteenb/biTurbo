@@ -92,35 +92,41 @@ export function Agents() {
             </div>
           </div>
         )}
-        {agents.map((a) => (
-          <div key={a.id} className="card flex items-center gap-3 p-4">
-            <div
-              className="flex h-9 w-9 items-center justify-center rounded-md bg-surface-2 text-accent"
-            >
-              <Bot size={16} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2">
-                <h3 className="font-serif text-base text-text">{a.name}</h3>
-                <span className="rounded-full border border-border bg-surface-2 px-1.5 py-0.5 text-[10px] font-mono text-text-muted">
-                  {a.kind}
-                </span>
+        {agents.map((a) => {
+          // Only show "live" badge if agent was seen within the last 24 hours.
+          const isLive = Date.now() - a.last_seen < 24 * 60 * 60 * 1000;
+          return (
+            <div key={a.id} className="card flex items-center gap-3 p-4">
+              <div
+                className="flex h-9 w-9 items-center justify-center rounded-md bg-surface-2 text-accent"
+              >
+                <Bot size={16} />
               </div>
-              <div className="mt-0.5 text-[11px] text-text-dim">
-                last seen {timeAgo(a.last_seen)} · id <span className="font-mono">{a.id}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2">
+                  <h3 className="font-serif text-base text-text">{a.name}</h3>
+                  <span className="rounded-full border border-border bg-surface-2 px-1.5 py-0.5 text-[10px] font-mono text-text-muted">
+                    {a.kind}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-text-dim">
+                  last seen {timeAgo(a.last_seen)} · id <span className="font-mono">{a.id}</span>
+                </div>
               </div>
+              {isLive && (
+                <div className="flex items-center gap-1.5">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-pulse_dot rounded-full bg-success opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+                  </span>
+                  <span className="text-[10px] uppercase tracking-widest text-text-dim">
+                    live
+                  </span>
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-pulse_dot rounded-full bg-success opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
-              </span>
-              <span className="text-[10px] uppercase tracking-widest text-text-dim">
-                live
-              </span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

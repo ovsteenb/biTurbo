@@ -51,7 +51,7 @@ You have access to biTurbo, a persistent semantic memory layer via MCP.
 2. **ANSWER** — respond using the recalled context
 3. **REMEMBER** — call \`remember()\` after every response to store durable information
 
-### When to \`remember\` (call AFTER EVERY response):
+### When to \`remember\` (store only durable, non-obvious information):
 
 - User states a fact about themselves/environment/project → \`fact\`
 - You make a decision with rationale → \`decision\`
@@ -62,6 +62,7 @@ You have access to biTurbo, a persistent semantic memory layer via MCP.
 - Meta-observation about work → \`reflection\`
 - ❌ Transient state — don't remember
 - ❌ Public knowledge — don't remember
+- ❌ Routine assistant responses with no durable signal — don't remember
 - ❌ Secrets, tokens, PII — NEVER
 
 ### Memory types:
@@ -102,13 +103,14 @@ Project-agnostic preferences and cross-project facts live here.
 2. **ANSWER** — respond using the recalled context
 3. **REMEMBER** — call \`remember()\` after every response to store durable information
 
-### When to \`remember\` (call AFTER EVERY response):
+### When to \`remember\` (store only durable, non-obvious information):
 
 - User states a cross-project fact → \`fact\`
 - You make a decision with rationale → \`decision\`
 - User expresses a preference → \`preference\`
 - You discover a pattern → \`pattern\`
 - Something noteworthy happened → \`episode\`
+- ❌ Routine responses with no durable signal — don't remember
 
 ### Memory types:
 \`fact\`, \`decision\`, \`preference\`, \`pattern\`, \`episode\`, \`reflection\`
@@ -282,7 +284,7 @@ ${end}`;
 {mcpConfig}
         </pre>
         <p className="mt-3 text-sm text-text-muted">
-          Once connected, your agent has 19 tools (search, remember, forget, ingest_project,
+          Once connected, your agent has 20 tools (search, remember, forget, ingest_project,
           consolidate, list_projects, …). See <span className="kbd">INSTRUCTIONS.md</span> in the
           project root for the full tool reference and usage rules.
         </p>

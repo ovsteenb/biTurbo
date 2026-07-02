@@ -15,40 +15,28 @@ import { ContextMenuHost } from "./components/ContextMenu";
 
 export default function App() {
   const view = useApp((s) => s.view);
-  const refreshProjects = useApp((s) => s.refreshProjects);
-  const refreshStats = useApp((s) => s.refreshStats);
-  const refreshActivity = useApp((s) => s.refreshActivity);
-  const refreshAgents = useApp((s) => s.refreshAgents);
-  const refreshMemories = useApp((s) => s.refreshMemories);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const [ready, setReady] = useState(false);
 
-  const refreshGraph = useApp((s) => s.refreshGraph);
+  const bootstrapOnce = useApp((s) => s.bootstrapOnce);
+  const refreshMemories = useApp((s) => s.refreshMemories);
   const refreshTags = useApp((s) => s.refreshTags);
+  const refreshGraph = useApp((s) => s.refreshGraph);
 
+  // Single batched IPC call on mount — replaces 7 sequential calls.
   useEffect(() => {
-    (async () => {
-      try {
-        await refreshProjects();
-        await refreshStats();
-        await refreshActivity();
-        await refreshAgents();
-        await refreshMemories();
-        await refreshTags().catch(() => {});
-        await refreshGraph().catch(() => {});
-        setReady(true);
-      } catch (e) {
-        console.error("init failed", e);
-        setReady(true);
-      }
-    })();
-  }, [refreshProjects, refreshStats, refreshActivity, refreshAgents, refreshMemories, refreshTags, refreshGraph]);
+    bootstrapOnce()
+      .catch((e) => console.error("bootstrap failed", e))
+      .finally(() => setReady(true));
+  }, [bootstrapOnce]);
 
+  // Re-fetch project-scoped data when the active project changes.
   useEffect(() => {
+    if (!ready) return;
     refreshMemories();
     refreshTags().catch(() => {});
     refreshGraph().catch(() => {});
-  }, [currentProjectId, refreshMemories, refreshTags, refreshGraph]);
+  }, [currentProjectId, ready, refreshMemories, refreshTags, refreshGraph]);
 
   // Global keyboard
   useEffect(() => {
