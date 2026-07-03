@@ -16,7 +16,8 @@
 //! └─────────────────────────────────────────────────────────────┘
 //!
 //! Data lives in the OS app-data dir (~/Library/Application Support/com.biturbo.app/
-//! on macOS). Both the GUI and the MCP server share the same on-disk state.
+//! on macOS, %APPDATA%\com.biturbo.app on Windows, ~/.local/share/com.biturbo.app on
+//! Linux). Both the GUI and the MCP server share the same on-disk state.
 
 pub mod commands;
 pub mod consolidate;

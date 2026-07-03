@@ -50,7 +50,7 @@ Every AI coding session starts blank. biTurbo gives your agents **persistent, pr
 
 ## Install
 
-Requires: **pnpm 11+**, **node 20+**, **rustc 1.88+**, **macOS / Linux** (Windows untested).
+Requires: **pnpm 11+**, **node 20+**, **rustc 1.88+**, **macOS / Linux / Windows**.
 
 ```bash
 # 1. Clone & enter
@@ -66,9 +66,11 @@ pnpm mcp:build           # writes target/debug/biturbo-mcp
 cd src-tauri && cargo build --release --bin biturbo-mcp
 ```
 
-For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your platform (Xcode CLT on macOS, webkit2gtk on Linux).
+For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your platform (Xcode CLT on macOS, webkit2gtk on Linux, MSVC build tools + WebView2 on Windows).
 
-### Building for distribution (signed .dmg)
+### Building for distribution
+
+#### macOS (signed .dmg)
 
 To build a signed macOS .dmg for distribution:
 
@@ -92,6 +94,22 @@ APPLE_ID="your@email.com" APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx" APPLE_TEAM_ID="89
 ```
 
 For App Store distribution, use the "Apple Distribution" certificate instead of "Developer ID Application".
+
+#### Windows (.msi)
+
+To build a Windows .msi installer:
+
+```bash
+pnpm tauri:build
+```
+
+**Prerequisites**:
+- [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (pre-installed on Windows 11)
+- MSVC build tools (Visual Studio 2022 or Build Tools)
+
+**Output**: `src-tauri/target/release/bundle/msi/biTurbo_0.1.0_x64_en-US.msi`
+
+For code signing, set the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` environment variables before building.
 
 ### Verify
 
@@ -132,9 +150,9 @@ Theme: click the sun/moon in the top bar. Persists per device, respects OS prefe
 
 ```bash
 # quick keyboard shortcuts
-⌘K       Quick add memory
-⌘/       Focus search
-Esc      Close modal / menu
+⌘K / Ctrl+K    Quick add memory
+⌘/ / Ctrl+/    Focus search
+Esc            Close modal / menu
 ```
 
 ---
@@ -147,7 +165,7 @@ The standalone `biturbo-mcp` binary speaks MCP over stdio. Add it to your agent'
 {
   "mcpServers": {
     "biturbo": {
-      "command": "/Users/lxxfysl/Projekte/biTurbo/src-tauri/target/debug/biturbo-mcp",
+      "command": "/path/to/biturbo-mcp",
       "args": [],
       "env": {}
     }
@@ -214,7 +232,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 | Backend | Rust (1.77+) | Cold start < 50ms, single binary, no Python env |
 | DB | SQLite + r2d2 + rusqlite | Local, WAL, zero-config |
 | Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
-| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal/CPU, ~30 MB model |
+| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal (macOS) / DirectML (Windows) / CPU, ~30 MB model |
 | MCP | stdio JSON-RPC | Lightweight hand-rolled MCP transport, no SDK runtime dependency |
 | Tree-sitter | 0.25 + lang crates | rust / ts / js / py / go, per-function chunks, structural code search |
 
@@ -242,7 +260,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 - [ ] **Web export** of memories for sharing
 - [ ] **Memory diffing** between projects
 - [ ] **GitHub Actions CI** — run smoke test on every PR
-- [ ] **Homebrew tap** — `brew install biturbo`
+- [ ] **Package managers** — `brew install biturbo` (macOS), `winget install biturbo` (Windows), AUR package (Linux)
 
 ---
 

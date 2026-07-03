@@ -161,7 +161,7 @@ losing tribal knowledge is high.
 
 - End of a long session, before signing off.
 - After a large `ingest_project` (decay will downrank rarely-accessed code chunks).
-- On a schedule if you have one (cron / launchd / systemd timer).
+- On a schedule if you have one (cron / launchd / systemd timer / Task Scheduler).
 
 It does three things, in order:
 1. **Decay** — old, never-accessed memories lose importance exponentially (60-day half-life).

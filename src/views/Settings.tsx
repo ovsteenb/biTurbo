@@ -167,7 +167,11 @@ ${end}`;
     });
   }
 
-  const dataDir = "~/.local/share/com.biturbo.app (macOS: ~/Library/Application Support/com.biturbo.app)";
+  const dataDir = [
+    "macOS:   ~/Library/Application Support/com.biturbo.app",
+    "Windows: %APPDATA%\\com.biturbo.app",
+    "Linux:   ~/.local/share/com.biturbo.app",
+  ].join("\n");
 
   const mcpConfig = `{
   "mcpServers": {
@@ -291,7 +295,8 @@ ${end}`;
         <p className="mt-2 text-xs text-text-dim">
           If <span className="kbd">biturbo-mcp</span> isn't on your <span className="kbd">PATH</span>,
           set <span className="kbd">command</span> to the absolute path instead — e.g.{" "}
-          <span className="kbd">/Applications/biTurbo.app/Contents/MacOS/biturbo-mcp</span> (macOS) or{" "}
+          <span className="kbd">/Applications/biTurbo.app/Contents/MacOS/biturbo-mcp</span> (macOS),{" "}
+          <span className="kbd">%LOCALAPPDATA%\\biTurbo\\biturbo-mcp.exe</span> (Windows), or{" "}
           <span className="kbd">src-tauri/target/release/biturbo-mcp</span> (dev build).
         </p>
         <p className="mt-3 text-sm text-text-muted">
