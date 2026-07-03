@@ -872,3 +872,49 @@ pub fn install_mcp_config(
         merged: existed,
     })
 }
+
+#[derive(Serialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub body: String,
+    pub available: bool,
+}
+
+#[tauri::command]
+pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+
+    match update {
+        Some(update) => Ok(UpdateInfo {
+            version: update.version.clone(),
+            body: update.body.clone().unwrap_or_default(),
+            available: true,
+        }),
+        None => Ok(UpdateInfo {
+            version: String::new(),
+            body: String::new(),
+            available: false,
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+
+    if let Some(update) = update {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| e.to_string())?;
+        app.restart();
+    }
+
+    Ok(())
+}

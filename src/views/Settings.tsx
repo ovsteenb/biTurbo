@@ -14,8 +14,11 @@ import {
   AppWindow,
   Download,
   Loader2,
+  RefreshCw,
+  ArrowUpCircle,
 } from "lucide-react";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { invoke } from "@tauri-apps/api/core";
 import clsx from "clsx";
 
 export function Settings() {
@@ -31,6 +34,9 @@ export function Settings() {
   const [bootSaving, setBootSaving] = useState(false);
   const [mcpInstalling, setMcpInstalling] = useState<string | null>(null);
   const [mcpInstalled, setMcpInstalled] = useState<Set<string>>(new Set());
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<{ version: string; body: string; available: boolean } | null>(null);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
 
   useEffect(() => {
     isEnabled()
@@ -368,6 +374,60 @@ ${end}`;
           consolidate, list_projects, …). See <span className="kbd">INSTRUCTIONS.md</span> in the
           project root for the full tool reference and usage rules.
         </p>
+      </Section>
+
+      <Section icon={ArrowUpCircle} title="Updates">
+        <p className="text-sm text-text-muted">
+          Check for new versions and install them automatically.
+        </p>
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            onClick={async () => {
+              setUpdateChecking(true);
+              setUpdateInfo(null);
+              try {
+                const info = await invoke<{ version: string; body: string; available: boolean }>("check_for_updates");
+                setUpdateInfo(info);
+                if (!info.available) {
+                  showToast({ kind: "ok", text: "You're on the latest version" });
+                }
+              } catch (e) {
+                showToast({ kind: "err", text: e instanceof Error ? e.message : "Update check failed" });
+              } finally {
+                setUpdateChecking(false);
+              }
+            }}
+            disabled={updateChecking || updateInstalling}
+            className="btn-outline inline-flex items-center gap-1.5 text-xs"
+          >
+            {updateChecking ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            Check for updates
+          </button>
+          {updateInfo?.available && (
+            <button
+              onClick={async () => {
+                setUpdateInstalling(true);
+                try {
+                  await invoke("install_update");
+                } catch (e) {
+                  showToast({ kind: "err", text: e instanceof Error ? e.message : "Update failed" });
+                } finally {
+                  setUpdateInstalling(false);
+                }
+              }}
+              disabled={updateInstalling}
+              className="btn-outline inline-flex items-center gap-1.5 text-xs border-accent/50 bg-accent-soft"
+            >
+              {updateInstalling ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              {updateInstalling ? "Installing…" : `Install v${updateInfo.version}`}
+            </button>
+          )}
+        </div>
+        {updateInfo?.available && updateInfo.body && (
+          <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted whitespace-pre-wrap">
+{updateInfo.body}
+          </pre>
+        )}
       </Section>
 
       <Section icon={Terminal} title="What to read next">

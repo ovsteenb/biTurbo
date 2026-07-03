@@ -81,7 +81,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             tray::setup(app)?;
 
             let data_dir = app.path().app_data_dir().expect("app data dir resolvable");
@@ -132,6 +135,8 @@ pub fn run() {
             commands::bootstrap,
             commands::resolve_mcp_binary_path,
             commands::install_mcp_config,
+            commands::check_for_updates,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

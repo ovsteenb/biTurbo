@@ -32,6 +32,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -51,6 +52,14 @@
       "exceptionDomain": "",
       "frameworks": [],
       "providerShortName": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxMjYxQzk4MDE5N0UxODEKUldTQjRaY0JtQndtOFRudDg1cklQY2dCMTlFbjlkTnhEdlgwOUd1dGc2N2tXS2JDWGIyc1h3TmkK",
+      "endpoints": [
+        "https://github.com/ltfysl/biTurbo/releases/latest/download/latest.json"
+      ]
     }
   }
 }
