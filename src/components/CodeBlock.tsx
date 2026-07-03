@@ -1,12 +1,24 @@
 import { tokenizeCode } from "../lib/format";
 
 const TOKEN_CLASS: Record<string, string> = {
-  keyword: "text-violet-300",
-  string: "text-emerald-300",
+  keyword: "italic",
+  string: "italic",
   comment: "text-text-dim italic",
-  number: "text-amber-300",
+  number: "italic",
   plain: "text-text-muted",
 };
+
+function TokenSpan({ kind, children }: { kind: string; children: React.ReactNode }) {
+  const style: React.CSSProperties = {};
+  if (kind === "keyword" || kind === "string" || kind === "number") {
+    style.color = `var(--token-${kind})`;
+  }
+  return (
+    <span style={style} className={TOKEN_CLASS[kind] ?? ""}>
+      {children}
+    </span>
+  );
+}
 
 interface CodeBlockProps {
   code: string;
@@ -26,9 +38,9 @@ export function CodeBlock({ code, maxLines, className }: CodeBlockProps) {
         {shown.map((line, i) => (
           <div key={i} className={lineClass}>
             {tokenizeCode(line).map((tok, j) => (
-              <span key={j} className={TOKEN_CLASS[tok.kind]}>
+              <TokenSpan key={j} kind={tok.kind}>
                 {tok.text}
-              </span>
+              </TokenSpan>
             ))}
             {line.length === 0 && "\u00A0"}
           </div>

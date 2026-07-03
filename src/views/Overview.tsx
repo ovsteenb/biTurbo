@@ -35,13 +35,13 @@ export function Overview() {
   const typeData = stats?.by_type ?? [];
   const total = Math.max(1, typeData.reduce((a, [, n]) => a + n, 0));
   const typeColors: Record<string, string> = {
-    fact: "bg-sky-400",
-    decision: "bg-amber-400",
-    preference: "bg-violet-400",
-    pattern: "bg-emerald-400",
-    episode: "bg-rose-400",
-    reflection: "bg-indigo-400",
-    code: "bg-orange-400",
+    fact: "bg-[var(--type-fact-dot)]",
+    decision: "bg-[var(--type-decision-dot)]",
+    preference: "bg-[var(--type-preference-dot)]",
+    pattern: "bg-[var(--type-pattern-dot)]",
+    episode: "bg-[var(--type-episode-dot)]",
+    reflection: "bg-[var(--type-reflection-dot)]",
+    code: "bg-[var(--type-code-dot)]",
   };
 
   return (
