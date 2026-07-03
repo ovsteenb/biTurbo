@@ -20,7 +20,7 @@ jobs:
           - label: Windows x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
-            args: ""
+            args: "--bundles nsis"
           - label: macOS ARM
             runner: macos-latest
             target: aarch64-apple-darwin
