@@ -91,10 +91,11 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
     ? stripLeadingPathComment(memory.content, memory.file_path)
     : memory.content;
   const CODE_COLLAPSE_LINES = 14;
-  const TEXT_COLLAPSE_CHARS = 480;
+  const TEXT_COLLAPSE_CHARS = 220;
+  const TEXT_COLLAPSE_LINES = 8;
   const isCollapsible = isCode
     ? bodyContent.split("\n").length > CODE_COLLAPSE_LINES
-    : bodyContent.length > TEXT_COLLAPSE_CHARS || bodyContent.split("\n").length > 10;
+    : bodyContent.length > TEXT_COLLAPSE_CHARS || bodyContent.split("\n").length > TEXT_COLLAPSE_LINES;
   const collapsed = isCollapsible && !expanded;
 
   return (
@@ -145,7 +146,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             <div
               className={clsx(
                 "whitespace-pre-wrap text-sm leading-relaxed text-text text-pretty overflow-hidden",
-                collapsed && "max-h-[220px]"
+                collapsed && "max-h-[160px]"
               )}
             >
               {memory.content}
