@@ -42,6 +42,11 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+      - name: Create sidecar placeholder
+        run: |
+          mkdir -p src-tauri/binaries
+          echo placeholder > src-tauri/binaries/biturbo-mcp-x86_64-unknown-linux-gnu
+
       - name: Format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
@@ -65,5 +70,9 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Create sidecar placeholder
+        run: |
+          mkdir -p src-tauri/binaries
+          echo placeholder > src-tauri/binaries/biturbo-mcp-x86_64-unknown-linux-gnu
       - run: pnpm mcp:build
       - run: pnpm mcp:test

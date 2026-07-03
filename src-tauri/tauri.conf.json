@@ -40,6 +40,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "externalBin": ["binaries/biturbo-mcp"],
     "category": "DeveloperTool",
     "shortDescription": "Local-first memory layer for AI coding agents",
     "longDescription": "biTurbo gives your AI coding agents persistent, semantic, local-first memory. Built on turbovec for maximum compression. Includes an MCP server so any agent can read/write memories, projects, and indexed code.",
