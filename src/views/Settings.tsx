@@ -78,9 +78,9 @@ You have access to biTurbo, a persistent semantic memory layer via MCP.
 ### Session — resolve \`PID\` once, reuse for every call this session:
 1. \`register_agent(name, kind)\`
 2. \`list_projects()\` — note each project's \`id\`/\`name\`
-3. \`get_project_name_from_file(root_path=<repo root>)\`
+3. \`get_project_name_from_file(root_path=<repo root>)\` — reads the project's \`.biTurbo\` marker file
    - \`{"projectName": X}\` → find the project from step 2 whose \`id\` or \`name\` matches \`X\`; set \`PID\` to that project's \`id\`
-   - No match, or \`{"error": ...}\` → fall back to \`PID = "${pid}"\`
+   - No match, or \`{"error": ...}\` (e.g. no \`.biTurbo\` file in this repo) → fall back to \`PID = "${pid}"\`
 4. EVERY TURN → recall(PID) → answer → remember(PID)
 5. END → \`consolidate(project_id=PID)\`, final \`remember(project_id=PID)\`
 
@@ -124,9 +124,10 @@ Project-agnostic preferences and cross-project facts live here.
 - 0.5-0.7: typical (default 0.6)
 
 ### Session:
-- START → \`register_agent\`, \`list_projects()\`, \`get_project_name_from_file(root_path=<repo root>)\` (silently skip on \`{"error": ...}\`)
+- START → \`register_agent\`, \`list_projects()\`
 - EVERY TURN → recall → answer → remember
 - END → \`consolidate\`
+- Note: this rule always uses \`project_id="default"\` — it does not read \`.biTurbo\`. Use the per-project rule block (biTurbo → Settings → Agent rule blocks → "project") for repo-scoped memory that resolves \`PID\` from \`.biTurbo\`.
 
 ### Anti-patterns:
 - Don't skip recall
