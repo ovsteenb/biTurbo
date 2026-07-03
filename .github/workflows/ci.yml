@@ -27,20 +27,16 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+          cache: npm
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Build frontend
-        run: pnpm build
+        run: npm run build
 
       - name: Create sidecar placeholder
         run: |
@@ -62,17 +58,14 @@ jobs:
     needs: rust
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          cache: npm
+      - run: npm ci
       - name: Create sidecar placeholder
         run: |
           mkdir -p src-tauri/binaries
           echo placeholder > src-tauri/binaries/biturbo-mcp-x86_64-unknown-linux-gnu
-      - run: pnpm mcp:build
-      - run: pnpm mcp:test
+      - run: npm run mcp:build
+      - run: npm run mcp:test

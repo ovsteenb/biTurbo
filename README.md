@@ -15,7 +15,7 @@ Persistent · project-scoped · semantic · MCP-native.
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
 [![MCP](https://img.shields.io/badge/MCP-20%20tools-C7A0E0.svg)](#mcp-tools)
 [![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
-[![pnpm 11](https://img.shields.io/badge/pnpm-11-E8E2D6.svg)](https://pnpm.io)
+[![npm 10+](https://img.shields.io/badge/npm-10%2B-CB3837.svg)](https://npmjs.com)
 
 </div>
 
@@ -50,7 +50,7 @@ Every AI coding session starts blank. biTurbo gives your agents **persistent, pr
 
 ## Install
 
-Requires: **pnpm 11+**, **node 22+**, **rustc 1.88+**, **macOS / Linux / Windows**.
+Requires: **npm 10+**, **node 22+**, **rustc 1.88+**, **macOS / Linux / Windows**.
 
 ```bash
 # 1. Clone & enter
@@ -58,10 +58,10 @@ git clone https://github.com/ltfysl/biTurbo.git
 cd biTurbo
 
 # 2. JS deps
-pnpm install
+npm install
 
 # 3. Rust MCP binary
-pnpm mcp:build           # writes target/debug/biturbo-mcp
+npm run mcp:build           # writes target/debug/biturbo-mcp
 # or for a release build:
 cd src-tauri && cargo build --release --bin biturbo-mcp
 ```
@@ -75,7 +75,7 @@ For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/
 To build a signed macOS .dmg for distribution:
 
 ```bash
-pnpm tauri:build
+npm run tauri:build
 ```
 
 **Prerequisites**:
@@ -90,7 +90,7 @@ The app is code-signed but not notarized. To notarize for public distribution, s
 - `APPLE_TEAM_ID` — your team ID (10 characters, e.g., `89NFSUEFES`)
 
 ```bash
-APPLE_ID="your@email.com" APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx" APPLE_TEAM_ID="89NFSUEFES" pnpm tauri:build
+APPLE_ID="your@email.com" APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx" APPLE_TEAM_ID="89NFSUEFES" npm run tauri:build
 ```
 
 For App Store distribution, use the "Apple Distribution" certificate instead of "Developer ID Application".
@@ -100,7 +100,7 @@ For App Store distribution, use the "Apple Distribution" certificate instead of 
 To build a Windows .msi installer:
 
 ```bash
-pnpm tauri:build
+npm run tauri:build
 ```
 
 **Prerequisites**:

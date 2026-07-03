@@ -9,7 +9,7 @@ biTurbo is built and released through GitHub Actions. The release pipeline produ
 3. Run the release script:
 
    ```bash
-   pnpm release
+   npm run release
    ```
 
 This reads the current version from `package.json`, creates a git tag like `v0.1.0`, and pushes it to GitHub. The tag triggers the [`.github/workflows/release.yml`](../.github/workflows/release.yml) workflow, which builds all three targets and creates a draft GitHub Release.
@@ -63,10 +63,10 @@ To build the app locally without creating a release:
 
 ```bash
 # Standard local release build (unsigned, host platform only)
-pnpm tauri:build
+npm run tauri:build
 
 # macOS notarized release build (requires signing env vars)
-APPLE_ID=... APPLE_PASSWORD=... APPLE_TEAM_ID=... pnpm tauri:build:notarized
+APPLE_ID=... APPLE_PASSWORD=... APPLE_TEAM_ID=... npm run tauri:build:notarized
 ```
 
 These scripts build the `biturbo-mcp` sidecar first and then run `tauri build`.
@@ -75,16 +75,16 @@ These scripts build the `biturbo-mcp` sidecar first and then run `tauri build`.
 
 ```bash
 # Run the Tauri app in dev mode
-pnpm tauri:dev
+npm run tauri:dev
 
 # Run the MCP server standalone
-pnpm mcp:dev
+npm run mcp:dev
 
 # Build the MCP server standalone
-pnpm mcp:build
+npm run mcp:build
 
 # Run MCP smoke tests
-pnpm mcp:test
+npm run mcp:test
 ```
 
 ## Troubleshooting
