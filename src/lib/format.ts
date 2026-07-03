@@ -74,7 +74,72 @@ export const MEM_TYPE_META: Record<
   },
 };
 
+export function truncatePath(path: string, maxLen = 40): string {
+  if (path.length <= maxLen) return path;
+  const segments = path.split("/");
+  const file = segments.pop() ?? "";
+  let result = file;
+  while (segments.length > 0) {
+    const next = segments.pop() + "/" + result;
+    if (("…/" + next).length > maxLen) break;
+    result = next;
+  }
+  return result === path ? result : "…/" + result;
+}
+
 export function importanceDots(imp: number): number {
   // 0..1 → 1..5 dots
   return Math.max(1, Math.min(5, Math.round(imp * 5)));
+}
+
+/**
+ * Code memory content is often stored with a redundant leading header comment
+ * (e.g. `// C:\path\file.ts:1-133`) that duplicates the path/range already
+ * shown in the code chip. Strip it so the code block only shows real code.
+ */
+export function stripLeadingPathComment(content: string, filePath: string | null): string {
+  if (!filePath) return content;
+  const lines = content.split("\n");
+  const first = lines[0]?.trim() ?? "";
+  const isCommentLine = /^(\/\/|#|--|\*)/.test(first);
+  const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
+  if (isCommentLine && first.includes(fileName)) {
+    return lines.slice(1).join("\n").replace(/^\n+/, "");
+  }
+  return content;
+}
+
+const KEYWORDS = new Set([
+  "import", "from", "export", "default", "const", "let", "var", "function",
+  "return", "if", "else", "for", "while", "do", "switch", "case", "break",
+  "continue", "class", "interface", "type", "extends", "implements", "public",
+  "private", "protected", "static", "readonly", "async", "await", "new",
+  "this", "super", "null", "undefined", "true", "false", "void", "try",
+  "catch", "finally", "throw", "typeof", "instanceof", "in", "of", "as",
+  "enum", "namespace", "declare", "yield", "delete", "fn", "impl", "struct",
+  "pub", "mut", "use", "def", "self", "None", "True", "False", "match",
+]);
+
+export interface CodeToken {
+  text: string;
+  kind: "keyword" | "string" | "comment" | "number" | "plain";
+}
+
+/** Lightweight, dependency-free tokenizer for a code preview (not a full lexer). */
+export function tokenizeCode(line: string): CodeToken[] {
+  const tokens: CodeToken[] = [];
+  const pattern =
+    /(\/\/.*$|#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)|(\s+)|(.)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(line))) {
+    const [, comment, str, num, word, space, other] = match;
+    if (comment !== undefined) tokens.push({ text: comment, kind: "comment" });
+    else if (str !== undefined) tokens.push({ text: str, kind: "string" });
+    else if (num !== undefined) tokens.push({ text: num, kind: "number" });
+    else if (word !== undefined)
+      tokens.push({ text: word, kind: KEYWORDS.has(word) ? "keyword" : "plain" });
+    else if (space !== undefined) tokens.push({ text: space, kind: "plain" });
+    else if (other !== undefined) tokens.push({ text: other, kind: "plain" });
+  }
+  return tokens;
 }

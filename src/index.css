@@ -165,6 +165,36 @@
   .memory-card.active {
     @apply border-accent/40 bg-accent-soft;
   }
+
+  .code-chip {
+    @apply inline-flex min-w-0 items-center gap-1.5 rounded-md border border-orange-500/20
+           bg-orange-500/5 px-2 py-1 font-mono text-orange-200/90;
+  }
+  .code-chip-path {
+    @apply min-w-0 truncate;
+  }
+  .code-chip-range {
+    @apply shrink-0 rounded border border-orange-500/25 bg-orange-500/10 px-1 py-px
+           text-orange-200;
+  }
+  .code-chip-lang {
+    @apply ml-auto shrink-0 rounded border border-orange-500/25 px-1.5 py-0.5
+           uppercase tracking-wider text-orange-200/80;
+  }
+
+  .code-block {
+    @apply overflow-hidden rounded-md border border-border-subtle bg-black/30
+           px-2.5 py-2 font-mono text-[11.5px] leading-relaxed;
+  }
+  .code-block-line {
+    @apply whitespace-pre truncate;
+  }
+  .code-block-line.wrap {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    overflow: visible;
+    text-overflow: clip;
+  }
 }
 
 @layer utilities {

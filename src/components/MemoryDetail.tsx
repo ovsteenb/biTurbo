@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import type { Memory } from "../lib/types";
-import { MEM_TYPE_META, timeAgo, shortDate, importanceDots } from "../lib/format";
+import { MEM_TYPE_META, timeAgo, shortDate, importanceDots, truncatePath, stripLeadingPathComment } from "../lib/format";
 import { api } from "../lib/api";
 import { useApp, useConfirm } from "../lib/store";
-import { X, Trash2, Edit3, Save, FileCode2, Hash } from "lucide-react";
+import { X, Trash2, Edit3, Save, FileCode2, Hash, ChevronDown, ChevronUp } from "lucide-react";
 import clsx from "clsx";
+import { CodeBlock } from "./CodeBlock";
 
 export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () => void }) {
   const [editing, setEditing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState(memory.content);
   const [draftTags, setDraftTags] = useState(memory.tags.join(", "));
   const [draftImp, setDraftImp] = useState(memory.importance);
@@ -23,6 +25,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
     setDraftTags(memory.tags.join(", "));
     setDraftImp(memory.importance);
     setEditing(false);
+    setExpanded(false);
   }, [memory.uid]);
 
   useEffect(() => {
@@ -83,6 +86,16 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
 
   const meta = MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact;
   const dots = importanceDots(memory.importance);
+  const isCode = memory.mem_type === "code";
+  const bodyContent = isCode
+    ? stripLeadingPathComment(memory.content, memory.file_path)
+    : memory.content;
+  const CODE_COLLAPSE_LINES = 14;
+  const TEXT_COLLAPSE_CHARS = 480;
+  const isCollapsible = isCode
+    ? bodyContent.split("\n").length > CODE_COLLAPSE_LINES
+    : bodyContent.length > TEXT_COLLAPSE_CHARS || bodyContent.split("\n").length > 10;
+  const collapsed = isCollapsible && !expanded;
 
   return (
     <div className="flex h-full flex-col">
@@ -120,23 +133,54 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             className="input resize-none font-sans text-sm"
             autoFocus
           />
-        ) : (
-          <div className="whitespace-pre-wrap text-sm leading-relaxed text-text text-pretty">
-            {memory.content}
+        ) : isCode ? (
+          <div className="relative">
+            <CodeBlock code={bodyContent} maxLines={collapsed ? CODE_COLLAPSE_LINES : undefined} />
+            {collapsed && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 rounded-b-md bg-gradient-to-t from-surface to-transparent" />
+            )}
           </div>
+        ) : (
+          <div className="relative">
+            <div
+              className={clsx(
+                "whitespace-pre-wrap text-sm leading-relaxed text-text text-pretty overflow-hidden",
+                collapsed && "max-h-[220px]"
+              )}
+            >
+              {memory.content}
+            </div>
+            {collapsed && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-surface to-transparent" />
+            )}
+          </div>
+        )}
+
+        {!editing && isCollapsible && (
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            className="mt-2 flex items-center gap-1 text-[11px] text-text-dim transition hover:text-text-muted"
+          >
+            {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {expanded ? "Show less" : "Show more"}
+          </button>
         )}
 
         {/* Code location */}
         {memory.mem_type === "code" && memory.file_path && (
-          <div className="mt-3 flex items-center gap-2 rounded-md border border-orange-500/20 bg-orange-500/5 p-2.5 font-mono text-[11px] text-orange-200">
-            <FileCode2 size={12} />
-            <span className="truncate">
-              {memory.file_path}:{memory.start_line}-{memory.end_line}
-            </span>
-            {memory.language && (
-              <span className="ml-auto rounded border border-orange-500/30 px-1.5 py-0.5 text-[10px]">
-                {memory.language}
+          <div className="code-chip mt-3 py-1.5 text-[12px]" title={memory.file_path}>
+            <FileCode2 size={12} className="shrink-0" />
+            <span className="code-chip-path">{truncatePath(memory.file_path, 56)}</span>
+            {memory.start_line && (
+              <span className="code-chip-range">
+                L{memory.start_line}
+                {memory.end_line && memory.end_line !== memory.start_line
+                  ? `\u2013${memory.end_line}`
+                  : ""}
               </span>
+            )}
+            {memory.language && (
+              <span className="code-chip-lang">{memory.language}</span>
             )}
           </div>
         )}

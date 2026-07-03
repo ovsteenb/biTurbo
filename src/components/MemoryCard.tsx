@@ -1,10 +1,11 @@
 import type { Memory } from "../lib/types";
-import { MEM_TYPE_META, timeAgo, importanceDots } from "../lib/format";
+import { MEM_TYPE_META, timeAgo, importanceDots, truncatePath, stripLeadingPathComment } from "../lib/format";
 import { FileCode2, Hash } from "lucide-react";
 import clsx from "clsx";
 import { memo } from "react";
 import type { ContextMenuItem } from "./ContextMenu";
 import { useContextMenu } from "../lib/store";
+import { CodeBlock } from "./CodeBlock";
 
 interface MemoryCardProps {
   memory: Memory;
@@ -62,17 +63,29 @@ export const MemoryCard = memo(function MemoryCard({
         </span>
       </div>
 
-      <div className="line-clamp-3 text-sm leading-relaxed text-text text-pretty">
-        {memory.content}
-      </div>
+      {isCode ? (
+        <CodeBlock
+          code={stripLeadingPathComment(memory.content, memory.file_path)}
+          maxLines={4}
+        />
+      ) : (
+        <div className="line-clamp-3 text-sm leading-relaxed text-text text-pretty">
+          {memory.content}
+        </div>
+      )}
 
       {isCode && memory.file_path && (
-        <div className="code-callout mt-2 flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-[11px]">
-          <FileCode2 size={11} />
-          <span className="truncate">
-            {memory.file_path.split("/").slice(-2).join("/")}
-            {memory.start_line && `:${memory.start_line}`}
-          </span>
+        <div className="code-chip mt-2 text-[11px]" title={memory.file_path}>
+          <FileCode2 size={11} className="shrink-0" />
+          <span className="code-chip-path">{truncatePath(memory.file_path)}</span>
+          {memory.start_line && (
+            <span className="code-chip-range">
+              L{memory.start_line}
+              {memory.end_line && memory.end_line !== memory.start_line
+                ? `\u2013${memory.end_line}`
+                : ""}
+            </span>
+          )}
         </div>
       )}
 
