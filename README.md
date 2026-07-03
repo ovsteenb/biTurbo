@@ -11,7 +11,7 @@ Persistent · project-scoped · semantic · MCP-native.
 <br/>
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-D4A574.svg)](https://www.rust-lang.org)
+[![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-D4A574.svg)](https://www.rust-lang.org)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
 [![MCP](https://img.shields.io/badge/MCP-20%20tools-C7A0E0.svg)](#mcp-tools)
 [![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
@@ -50,7 +50,7 @@ Every AI coding session starts blank. biTurbo gives your agents **persistent, pr
 
 ## Install
 
-Requires: **npm 10+**, **node 22+**, **rustc 1.88+**, **macOS / Linux / Windows**.
+Requires: **npm 10+**, **node 22+**, **rustc 1.90+**, **macOS / Linux / Windows**.
 
 ```bash
 # 1. Clone & enter

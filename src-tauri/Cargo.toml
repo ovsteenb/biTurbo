@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Local-first memory layer for AI coding agents. turbovec + Tauri 2 + MCP."
 authors = ["you"]
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.90"
 default-run = "biturbo"
 
 [[bin]]
