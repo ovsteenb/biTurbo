@@ -38,18 +38,18 @@ export function Settings() {
 
   const projectRule = useMemo(() => {
     const pid = currentProjectId;
-    const start = "\u003cbiturbo-rule-start project=\"" + pid + "\"\u003e";
-    const end = "\u003c/biturbo-rule-start\u003e";
-    return `retrieve the projectName from the projects root file .biTurbo. If the file is not existing skip.\n\n${start}
+    const start = "\u003c!-- biturbo-rule:start project=\"" + pid + "\" --\u003e";
+    const end = "\u003c!-- biturbo-rule:end --\u003e";
+    return `${start}
 ## biTurbo memory rules for project "${pid}"
 
 You have access to biTurbo, a persistent semantic memory layer via MCP.
 
-### Core loop — follow this EVERY turn:
+### Core loop — follow this EVERY turn (use the resolved \`PID\` from Session below):
 
-1. **RECALL** — call \`recall_for_context(query=<user msg>, project_id="${pid}", k=8)\`
+1. **RECALL** — call \`recall_for_context(query=<user msg>, project_id=PID, k=8)\`
 2. **ANSWER** — respond using the recalled context
-3. **REMEMBER** — call \`remember()\` after every response to store durable information
+3. **REMEMBER** — call \`remember(project_id=PID, ...)\` after every response to store durable information
 
 ### When to \`remember\` (store only durable, non-obvious information):
 
@@ -75,22 +75,26 @@ You have access to biTurbo, a persistent semantic memory layer via MCP.
 
 ### Tags: 1-3 per memory. Good: \`auth\`, \`ui\`, \`db\`, \`api\`. Bad: \`important\`, \`todo\`.
 
-### Session:
-- START → \`register_agent(name, kind)\`, \`list_projects()\`
-- EVERY TURN → recall → answer → remember
-- END → \`consolidate(project_id)\`, final \`remember\`
+### Session — resolve \`PID\` once, reuse for every call this session:
+1. \`register_agent(name, kind)\`
+2. \`list_projects()\` — note each project's \`id\`/\`name\`
+3. \`get_project_name_from_file(root_path=<repo root>)\`
+   - \`{"projectName": X}\` → find the project from step 2 whose \`id\` or \`name\` matches \`X\`; set \`PID\` to that project's \`id\`
+   - No match, or \`{"error": ...}\` → fall back to \`PID = "${pid}"\`
+4. EVERY TURN → recall(PID) → answer → remember(PID)
+5. END → \`consolidate(project_id=PID)\`, final \`remember(project_id=PID)\`
 
 ### Anti-patterns:
 - Don't dump 10k memories — use recall_for_context k=5-10
 - Don't skip recall — amnesia is worse than no tool
-- Don't cross-project leak — always pass project_id="${pid}"
+- Don't cross-project leak — always pass the resolved \`project_id=PID\`
 - Never store secrets, tokens, PII
 ${end}`;
   }, [currentProjectId]);
 
   const globalRule = useMemo(() => {
-    const start = "\u003cbiturbo-rule-start scope=\"global\"\u003e";
-    const end = "\u003c/biturbo-rule-start\u003e";
+    const start = "\u003c!-- biturbo-rule:start scope=\"global\" --\u003e";
+    const end = "\u003c!-- biturbo-rule:end --\u003e";
     return `${start}
 ## biTurbo memory rules (global / cross-project)
 
@@ -120,7 +124,7 @@ Project-agnostic preferences and cross-project facts live here.
 - 0.5-0.7: typical (default 0.6)
 
 ### Session:
-- START → \`register_agent\`, \`list_projects()\`
+- START → \`register_agent\`, \`list_projects()\`, \`get_project_name_from_file(root_path=<repo root>)\` (silently skip on \`{"error": ...}\`)
 - EVERY TURN → recall → answer → remember
 - END → \`consolidate\`
 
@@ -283,6 +287,12 @@ ${end}`;
         <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted">
 {mcpConfig}
         </pre>
+        <p className="mt-2 text-xs text-text-dim">
+          If <span className="kbd">biturbo-mcp</span> isn't on your <span className="kbd">PATH</span>,
+          set <span className="kbd">command</span> to the absolute path instead — e.g.{" "}
+          <span className="kbd">/Applications/biTurbo.app/Contents/MacOS/biturbo-mcp</span> (macOS) or{" "}
+          <span className="kbd">src-tauri/target/release/biturbo-mcp</span> (dev build).
+        </p>
         <p className="mt-3 text-sm text-text-muted">
           Once connected, your agent has 20 tools (search, remember, forget, ingest_project,
           consolidate, list_projects, …). See <span className="kbd">INSTRUCTIONS.md</span> in the
