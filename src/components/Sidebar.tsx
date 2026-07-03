@@ -104,19 +104,11 @@ export function Sidebar() {
 
 function Logo() {
   return (
-    <div className="relative h-7 w-7 shrink-0">
-      <div
-        className="absolute inset-0 rounded-md"
-        style={{
-          background:
-            "linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #000 45%) 100%)",
-        }}
-      />
-      <div className="absolute inset-[3px] rounded-[5px] bg-bg" />
-      <div className="absolute inset-[3px] flex items-center justify-center">
-        <div className="h-2 w-2 rounded-full bg-accent" />
-      </div>
-    </div>
+    <img
+      src="/logo.png"
+      alt="biTurbo"
+      className="h-7 w-7 shrink-0 object-cover"
+    />
   );
 }
 
