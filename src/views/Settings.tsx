@@ -233,8 +233,9 @@ ${end}`;
       <Section icon={AppWindow} title="System tray">
         <p className="text-sm text-text-muted">
           biTurbo runs in the menu bar / system tray. Closing the window hides it;
-          use the tray icon to show it again. Right-click the tray icon for Show,
-          Hide, or Quit.
+          use the tray icon to show it again. The tray menu shows live memory,
+          project, and agent counts, and includes Show, Hide, Consolidate Now,
+          Open Data Folder, and Quit actions.
         </p>
       </Section>
 
