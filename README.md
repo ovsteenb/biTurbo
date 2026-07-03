@@ -50,7 +50,7 @@ Every AI coding session starts blank. biTurbo gives your agents **persistent, pr
 
 ## Install
 
-Requires: **pnpm 11+**, **node 20+**, **rustc 1.88+**, **macOS / Linux / Windows**.
+Requires: **pnpm 11+**, **node 22+**, **rustc 1.88+**, **macOS / Linux / Windows**.
 
 ```bash
 # 1. Clone & enter
