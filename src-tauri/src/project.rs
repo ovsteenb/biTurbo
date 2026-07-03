@@ -84,13 +84,63 @@ pub fn create(state: &AppState, input: CreateProjectInput) -> BiResult<Project> 
         let biturbo_file = std::path::PathBuf::from(root_path).join(".biTurbo");
         // Only write if file doesn't exist (skip/continue if it exists)
         if !biturbo_file.exists() {
-            let content = format!("projectName={}", input.name);
-            let _ = std::fs::write(&biturbo_file, content);
+            let _ = std::fs::write(&biturbo_file, biturbo_file_content(&id, &input.name, now));
         }
     }
 
     state.refresh_indices()?;
     get(state, &id)
+}
+
+/// Contents written to a project root's `.biTurbo` marker file.
+/// Simple `key=value` lines; the MCP server only reads the `projectName=`
+/// line, so extra fields are safe to add without breaking existing parsers.
+fn biturbo_file_content(id: &str, name: &str, created_at: i64) -> String {
+    format!(
+        "projectId={id}\nprojectName={name}\ncreatedAt={created_at}\nbiturboVersion=1\n"
+    )
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnsureMarkerFilesResult {
+    pub project_id: String,
+    pub created: Vec<String>,
+}
+
+/// Regenerate `.biTurbo` and/or `.biturboignore` for a project whose root_path
+/// predates these marker files (legacy projects). Idempotent — files that
+/// already exist are left untouched.
+pub fn ensure_marker_files(state: &AppState, project_id: &str) -> BiResult<EnsureMarkerFilesResult> {
+    let p = get(state, project_id)?;
+    let root_path = p
+        .root_path
+        .clone()
+        .ok_or_else(|| BiError::Invalid(format!("project '{project_id}' has no root_path set")))?;
+    let root = std::path::PathBuf::from(&root_path);
+    if !root.is_dir() {
+        return Err(BiError::Invalid(format!(
+            "root_path '{root_path}' does not exist on disk"
+        )));
+    }
+
+    let mut created = Vec::new();
+
+    let biturbo_file = root.join(".biTurbo");
+    if !biturbo_file.exists() {
+        let now = chrono::Utc::now().timestamp_millis();
+        std::fs::write(&biturbo_file, biturbo_file_content(&p.id, &p.name, now))
+            .map_err(|e| BiError::Invalid(format!("failed to write .biTurbo: {e}")))?;
+        created.push(".biTurbo".to_string());
+    }
+
+    if crate::ingest::ensure_biturboignore(&root)? {
+        created.push(".biturboignore".to_string());
+    }
+
+    Ok(EnsureMarkerFilesResult {
+        project_id: p.id,
+        created,
+    })
 }
 
 pub fn delete(state: &AppState, id: &str) -> BiResult<()> {

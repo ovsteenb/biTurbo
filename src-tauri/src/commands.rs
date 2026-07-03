@@ -138,6 +138,14 @@ pub fn delete_project(state: State<'_, AppState>, id: String) -> BiResult<()> {
     project::delete(state.inner(), &id)
 }
 
+#[tauri::command]
+pub fn ensure_project_marker_files(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> BiResult<project::EnsureMarkerFilesResult> {
+    project::ensure_marker_files(state.inner(), &project_id)
+}
+
 #[derive(Deserialize)]
 pub struct IngestArgs {
     pub project_id: String,

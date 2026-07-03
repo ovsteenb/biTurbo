@@ -101,6 +101,11 @@ export const api = {
 
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
 
+  ensureProjectMarkerFiles: (project_id: string) =>
+    invoke<{ project_id: string; created: string[] }>("ensure_project_marker_files", {
+      projectId: project_id,
+    }),
+
   ingestProject: (project_id: string, root_path: string) =>
     invoke<IngestJob>("ingest_project", {
       args: { project_id, root_path },

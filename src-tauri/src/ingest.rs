@@ -99,10 +99,10 @@ pub struct GraphEdge {
 /// and `.ignore`. `.biturboignore` gives users a biTurbo-specific layer for files that
 /// should stay in git but not in semantic memory, such as generated SDKs, fixtures,
 /// snapshots, huge examples, or noisy legacy folders.
-fn ensure_biturboignore(root: &Path) -> BiResult<()> {
+pub(crate) fn ensure_biturboignore(root: &Path) -> BiResult<bool> {
     let biturboignore = root.join(".biturboignore");
     if biturboignore.exists() {
-        return Ok(());
+        return Ok(false);
     }
 
     let mut content = String::from(
@@ -130,7 +130,7 @@ fn ensure_biturboignore(root: &Path) -> BiResult<()> {
         BiError::Ingest(format!("failed to write {}: {e}", biturboignore.display()))
     })?;
 
-    Ok(())
+    Ok(true)
 }
 
 #[derive(Clone)]

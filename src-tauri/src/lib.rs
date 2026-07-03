@@ -111,6 +111,7 @@ pub fn run() {
             commands::list_projects,
             commands::create_project,
             commands::delete_project,
+            commands::ensure_project_marker_files,
             commands::get_project,
             commands::ingest_project,
             commands::ingest_multiple_projects,

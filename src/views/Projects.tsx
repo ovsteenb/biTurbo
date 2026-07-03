@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useApp, useConfirm } from "../lib/store";
 import { api } from "../lib/api";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2, Eye, Download, FileText, Radar } from "lucide-react";
+import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2, Eye, Download, FileText, Radar, FilePlus2 } from "lucide-react";
 import clsx from "clsx";
 import type { IngestProgress } from "../lib/types";
 
@@ -143,6 +143,23 @@ export function Projects() {
       });
     } catch (e) {
       showToast({ kind: "err", text: String(e) });
+    }
+  }
+
+  const [repairing, setRepairing] = useState<string | null>(null);
+
+  async function repairMarkerFiles(projectId: string) {
+    setRepairing(projectId);
+    try {
+      const r = await api.ensureProjectMarkerFiles(projectId);
+      showToast({
+        kind: "ok",
+        text: r.created.length ? `Created ${r.created.join(", ")}` : "Already up to date",
+      });
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
+    } finally {
+      setRepairing(null);
     }
   }
 
@@ -375,6 +392,17 @@ export function Projects() {
                 >
                   <Download size={12} /> Export
                 </button>
+                {p.root_path && (
+                  <button
+                    onClick={() => repairMarkerFiles(p.id)}
+                    disabled={repairing === p.id}
+                    className="btn-outline"
+                    title="Generate .biTurbo / .biturboignore if missing (legacy projects)"
+                  >
+                    <FilePlus2 size={12} />
+                    {repairing === p.id ? "Generating…" : "Generate marker files"}
+                  </button>
+                )}
                 {p.root_path && (
                   <button
                     onClick={() => toggleWatch(p.id, p.root_path, !watchOn[p.id])}
