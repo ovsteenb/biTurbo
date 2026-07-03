@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../lib/store";
+import { api } from "../lib/api";
 import {
   Terminal,
   Folder,
@@ -11,6 +12,8 @@ import {
   Moon,
   Power,
   AppWindow,
+  Download,
+  Loader2,
 } from "lucide-react";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import clsx from "clsx";
@@ -26,6 +29,8 @@ export function Settings() {
   const [launchOnBoot, setLaunchOnBoot] = useState(false);
   const [bootLoading, setBootLoading] = useState(true);
   const [bootSaving, setBootSaving] = useState(false);
+  const [mcpInstalling, setMcpInstalling] = useState<string | null>(null);
+  const [mcpInstalled, setMcpInstalled] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     isEnabled()
@@ -167,6 +172,30 @@ ${end}`;
     });
   }
 
+  const mcpTargets = [
+    { id: "cursor", label: "Cursor" },
+    { id: "windsurf", label: "Windsurf" },
+    { id: "claude", label: "Claude Code" },
+    { id: "codex", label: "Codex" },
+    { id: "opencode", label: "OpenCode" },
+  ] as const;
+
+  async function installMcp(target: string, label: string) {
+    setMcpInstalling(target);
+    try {
+      const res = await api.installMcpConfig(target);
+      showToast({
+        kind: "ok",
+        text: `${res.created ? "Created" : "Merged into"} ${label} config: ${res.path}`,
+      });
+      setMcpInstalled((prev) => new Set(prev).add(target));
+    } catch (e) {
+      showToast({ kind: "err", text: `Failed to install ${label}: ${e}` });
+    } finally {
+      setMcpInstalling(null);
+    }
+  }
+
   const dataDir = [
     "macOS:   ~/Library/Application Support/com.biturbo.app",
     "Windows: %APPDATA%\\com.biturbo.app",
@@ -299,6 +328,40 @@ ${end}`;
           <span className="kbd">%LOCALAPPDATA%\\biTurbo\\biturbo-mcp.exe</span> (Windows), or{" "}
           <span className="kbd">src-tauri/target/release/biturbo-mcp</span> (dev build).
         </p>
+
+        <div className="mt-4">
+          <p className="text-sm font-medium text-text">One-click install</p>
+          <p className="mt-1 text-xs text-text-dim">
+            Auto-detects the binary path and merges into your agent's MCP config (non-destructive).
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {mcpTargets.map((t) => {
+              const installing = mcpInstalling === t.id;
+              const installed = mcpInstalled.has(t.id);
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => installMcp(t.id, t.label)}
+                  disabled={installing}
+                  className={clsx(
+                    "btn-outline inline-flex items-center gap-1.5 text-xs",
+                    installed && "border-accent/50 bg-accent-soft",
+                  )}
+                >
+                  {installing ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : installed ? (
+                    <Check size={13} />
+                  ) : (
+                    <Download size={13} />
+                  )}
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <p className="mt-3 text-sm text-text-muted">
           Once connected, your agent has 20 tools (search, remember, forget, ingest_project,
           consolidate, list_projects, …). See <span className="kbd">INSTRUCTIONS.md</span> in the

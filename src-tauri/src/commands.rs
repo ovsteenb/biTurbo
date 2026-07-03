@@ -660,3 +660,215 @@ fn slugify(s: &str) -> String {
         .collect::<Vec<_>>()
         .join("-")
 }
+
+// ── MCP config auto-install ─────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ResolveMcpBinaryResult {
+    pub path: String,
+    pub is_absolute: bool,
+}
+
+/// Resolve the absolute path to the bundled `biturbo-mcp` binary.
+/// Tries: current_exe parent dir → dev build paths → bare name fallback.
+#[tauri::command]
+pub fn resolve_mcp_binary_path() -> ResolveMcpBinaryResult {
+    let exe_name = if cfg!(windows) { "biturbo-mcp.exe" } else { "biturbo-mcp" };
+
+    // 1. Look next to the running app binary (installed builds)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join(exe_name);
+            if candidate.exists() {
+                return ResolveMcpBinaryResult {
+                    path: candidate.to_string_lossy().to_string(),
+                    is_absolute: true,
+                };
+            }
+            // macOS .app bundle: exe is Contents/MacOS/biTurbo, binary is alongside
+            // Already covered by parent.join above.
+        }
+    }
+
+    // 2. Dev build paths
+    for rel in &["src-tauri/target/release", "src-tauri/target/debug"] {
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidate = cwd.join(rel).join(exe_name);
+            if candidate.exists() {
+                return ResolveMcpBinaryResult {
+                    path: candidate.to_string_lossy().to_string(),
+                    is_absolute: true,
+                };
+            }
+        }
+    }
+
+    // 3. Fallback: bare name
+    ResolveMcpBinaryResult {
+        path: "biturbo-mcp".to_string(),
+        is_absolute: false,
+    }
+}
+
+#[derive(Deserialize)]
+pub struct InstallMcpConfigArgs {
+    pub target: String,
+}
+
+#[derive(Serialize)]
+pub struct InstallMcpConfigResult {
+    pub target: String,
+    pub path: String,
+    pub created: bool,
+    pub merged: bool,
+}
+
+/// Install or merge biTurbo's MCP config into an agent's config file.
+/// Non-destructive: preserves existing servers, only adds/overwrites the `biturbo` entry.
+#[tauri::command]
+pub fn install_mcp_config(
+    _state: State<'_, AppState>,
+    args: InstallMcpConfigArgs,
+) -> BiResult<InstallMcpConfigResult> {
+    let bin = resolve_mcp_binary_path();
+    let bin_path = &bin.path;
+
+    let home = dirs::home_dir().ok_or_else(|| {
+        crate::error::BiError::Invalid("cannot resolve home directory".into())
+    })?;
+
+    let (config_path, format): (std::path::PathBuf, &str) = match args.target.as_str() {
+        "cursor" => (home.join(".cursor").join("mcp.json"), "json-cursor"),
+        "windsurf" => (home.join(".codeium").join("windsurf").join("mcp_config.json"), "json-cursor"),
+        "claude" => (home.join(".claude.json"), "json-cursor"),
+        "opencode" => {
+            let base = if cfg!(target_os = "macos") {
+                home.join("Library").join("Application Support").join("opencode")
+            } else {
+                home.join(".config").join("opencode")
+            };
+            (base.join("opencode.json"), "json-opencode")
+        }
+        "codex" => (home.join(".codex").join("config.toml"), "toml-codex"),
+        other => return Err(crate::error::BiError::Invalid(format!("unknown target: {other}"))),
+    };
+
+    // Create parent dirs
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::error::BiError::Invalid(format!("failed to create {}: {e}", parent.display()))
+        })?;
+    }
+
+    let existed = config_path.exists();
+
+    match format {
+        "json-cursor" => {
+            // Cursor/Windsurf/Claude: { "mcpServers": { "biturbo": { ... } } }
+            let mut root: serde_json::Value = if existed {
+                let content = std::fs::read_to_string(&config_path).map_err(|e| {
+                    crate::error::BiError::Invalid(format!("failed to read {}: {e}", config_path.display()))
+                })?;
+                serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+
+            // Ensure mcpServers object exists
+            if root.get("mcpServers").is_none() {
+                root["mcpServers"] = serde_json::json!({});
+            }
+
+            // Add/overwrite biturbo entry, preserve others
+            root["mcpServers"]["biturbo"] = serde_json::json!({
+                "command": bin_path,
+                "args": [],
+                "env": {}
+            });
+
+            let output = serde_json::to_string_pretty(&root).map_err(|e| {
+                crate::error::BiError::Invalid(format!("failed to serialize JSON: {e}"))
+            })?;
+            std::fs::write(&config_path, output).map_err(|e| {
+                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+            })?;
+        }
+        "json-opencode" => {
+            // OpenCode: { "mcp": { "biturbo": { "type": "local", "command": [...], ... } } }
+            let mut root: serde_json::Value = if existed {
+                let content = std::fs::read_to_string(&config_path).map_err(|e| {
+                    crate::error::BiError::Invalid(format!("failed to read {}: {e}", config_path.display()))
+                })?;
+                serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+
+            if root.get("mcp").is_none() {
+                root["mcp"] = serde_json::json!({});
+            }
+
+            root["mcp"]["biturbo"] = serde_json::json!({
+                "type": "local",
+                "command": [bin_path],
+                "enabled": true
+            });
+
+            let output = serde_json::to_string_pretty(&root).map_err(|e| {
+                crate::error::BiError::Invalid(format!("failed to serialize JSON: {e}"))
+            })?;
+            std::fs::write(&config_path, output).map_err(|e| {
+                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+            })?;
+        }
+        "toml-codex" => {
+            // Codex: ~/.codex/config.toml — [mcp_servers.biturbo] table
+            // Simple text manipulation: remove existing [mcp_servers.biturbo] block, append new one.
+            let biturbo_block = format!(
+                "[mcp_servers.biturbo]\ncommand = \"{bin_path}\"\nargs = []\n"
+            );
+
+            let content = if existed {
+                std::fs::read_to_string(&config_path).unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            // Remove existing [mcp_servers.biturbo] section (from header line to next section or EOF)
+            let mut new_content = String::new();
+            let mut skip = false;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('[') && !trimmed.starts_with("[mcp_servers.biturbo") {
+                    skip = false;
+                }
+                if trimmed == "[mcp_servers.biturbo]" || trimmed.starts_with("[mcp_servers.biturbo]") {
+                    skip = true;
+                    continue;
+                }
+                if !skip {
+                    new_content.push_str(line);
+                    new_content.push('\n');
+                }
+            }
+
+            // Ensure there's a blank line before our block if content doesn't end with one
+            if !new_content.is_empty() && !new_content.ends_with("\n\n") {
+                new_content.push('\n');
+            }
+            new_content.push_str(&biturbo_block);
+
+            std::fs::write(&config_path, new_content).map_err(|e| {
+                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+            })?;
+        }
+        _ => unreachable!(),
+    }
+
+    Ok(InstallMcpConfigResult {
+        target: args.target,
+        path: config_path.to_string_lossy().to_string(),
+        created: !existed,
+        merged: existed,
+    })
+}

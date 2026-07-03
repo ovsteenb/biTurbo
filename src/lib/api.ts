@@ -161,4 +161,13 @@ export const api = {
     invoke<ActivityEntry[]>("recent_activity", { limit }),
 
   bootstrap: () => invoke<BootstrapPayload>("bootstrap"),
+
+  resolveMcpBinaryPath: () =>
+    invoke<{ path: string; is_absolute: boolean }>("resolve_mcp_binary_path"),
+
+  installMcpConfig: (target: string) =>
+    invoke<{ target: string; path: string; created: boolean; merged: boolean }>(
+      "install_mcp_config",
+      { args: { target } },
+    ),
 };

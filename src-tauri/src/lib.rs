@@ -130,6 +130,8 @@ pub fn run() {
             commands::register_agent,
             commands::recent_activity,
             commands::bootstrap,
+            commands::resolve_mcp_binary_path,
+            commands::install_mcp_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
