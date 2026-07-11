@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { useApp } from "../lib/store";
 import { api } from "../lib/api";
 import { X, Plus } from "lucide-react";
@@ -6,7 +6,7 @@ import clsx from "clsx";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection"] as const;
 
-export function QuickAdd() {
+export const QuickAdd = memo(function QuickAdd() {
   const open = useApp((s) => s.quickAddOpen);
   const setOpen = useApp((s) => s.setQuickAddOpen);
   const currentProjectId = useApp((s) => s.currentProjectId);
@@ -58,15 +58,23 @@ export function QuickAdd() {
       onClick={() => setOpen(false)}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quick-add-title"
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-          <div className="flex items-center gap-2 font-serif text-lg">
+          <div className="flex items-center gap-2 font-serif text-lg" id="quick-add-title">
             <span>Remember</span>
             <span className="font-mono text-[10px] text-text-dim">⌘K</span>
           </div>
-          <button onClick={() => setOpen(false)} className="btn-ghost p-1.5">
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="btn-ghost p-1.5"
+            aria-label="Close"
+          >
             <X size={14} />
           </button>
         </div>
@@ -78,9 +86,13 @@ export function QuickAdd() {
             placeholder="What should the agents remember?"
             rows={4}
             autoFocus
+            aria-label="Memory content"
             className="input resize-none text-sm"
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                submit();
+              }
             }}
           />
 
@@ -89,6 +101,7 @@ export function QuickAdd() {
               {TYPES.map((t) => (
                 <button
                   key={t}
+                  type="button"
                   onClick={() => setType(t)}
                   className={clsx(
                     "rounded-full px-2.5 py-0.5 text-xs transition",
@@ -107,6 +120,7 @@ export function QuickAdd() {
                 value={tags}
                 onChange={(e) => setTags(e.target.value)}
                 placeholder="tags, comma, separated"
+                aria-label="Tags"
                 className="input w-48 py-1 text-xs"
               />
               <div className="flex items-center gap-2">
@@ -118,6 +132,7 @@ export function QuickAdd() {
                   step="0.05"
                   value={importance}
                   onChange={(e) => setImportance(parseFloat(e.target.value))}
+                  aria-label="Importance"
                   className="w-20 accent-accent"
                 />
                 <span className="w-7 text-right font-mono text-[10px] text-text-muted">
@@ -135,6 +150,7 @@ export function QuickAdd() {
           <div className="flex items-center gap-2">
             <span className="kbd">⌘⏎</span>
             <button
+              type="button"
               onClick={submit}
               disabled={!content.trim() || busy}
               className="btn-primary"
@@ -146,4 +162,4 @@ export function QuickAdd() {
       </div>
     </div>
   );
-}
+});

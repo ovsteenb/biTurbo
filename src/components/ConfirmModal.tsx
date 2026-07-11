@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  memo,
+  type ReactNode,
+} from "react";
 import { AlertTriangle, X } from "lucide-react";
 import clsx from "clsx";
 import { useApp } from "../lib/store";
@@ -20,7 +26,7 @@ export interface ConfirmOptions {
   tone?: "danger" | "neutral";
 }
 
-export function ConfirmModalHost() {
+export const ConfirmModalHost = memo(function ConfirmModalHost() {
   const state = useApp((s) => s.confirmState);
   const resolve = useApp((s) => s.resolveConfirm);
   const cancel = useApp((s) => s.cancelConfirm);
@@ -31,7 +37,7 @@ export function ConfirmModalHost() {
       onCancel={cancel}
     />
   ) : null;
-}
+});
 
 function ConfirmModal({
   opts,
@@ -44,13 +50,16 @@ function ConfirmModal({
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  const mounted = useRef(true);
   const [pending, setPending] = useState(false);
 
   // Focus the confirm button on open, restore focus on close.
   useEffect(() => {
+    mounted.current = true;
     previouslyFocused.current = (document.activeElement as HTMLElement) ?? null;
     confirmRef.current?.focus();
     return () => {
+      mounted.current = false;
       // After close, hand focus back to whatever opened the modal.
       const opener = previouslyFocused.current;
       if (opener && document.body.contains(opener)) {
@@ -74,12 +83,9 @@ function ConfirmModal({
   async function handleConfirm() {
     setPending(true);
     try {
-      onResolve();
+      await onResolve();
     } finally {
-      // The store removes the modal synchronously when onResolve is
-      // called, so by the time this runs the component is unmounted
-      // anyway. Guard anyway.
-      setPending(false);
+      if (mounted.current) setPending(false);
     }
   }
 
@@ -97,6 +103,7 @@ function ConfirmModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-title"
+      aria-describedby="confirm-body"
     >
       <div className="w-full max-w-md rounded-lg border border-border bg-surface shadow-modal animate-modal_in">
         <div className="flex items-start gap-3 p-5">
@@ -112,11 +119,12 @@ function ConfirmModal({
             >
               {opts.title}
             </h2>
-            <div className="mt-1.5 text-sm text-text-muted text-pretty">
+            <div id="confirm-body" className="mt-1.5 text-sm text-text-muted text-pretty">
               {opts.body}
             </div>
           </div>
           <button
+            type="button"
             onClick={onCancel}
             className="btn-ghost -m-1 p-1.5"
             aria-label="Close"
@@ -126,6 +134,7 @@ function ConfirmModal({
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-5 py-3">
           <button
+            type="button"
             onClick={onCancel}
             disabled={pending}
             className="btn-outline"
@@ -134,6 +143,7 @@ function ConfirmModal({
           </button>
           <button
             ref={confirmRef}
+            type="button"
             onClick={handleConfirm}
             disabled={pending}
             className={clsx(

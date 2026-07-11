@@ -3,6 +3,8 @@ use crate::error::{BiError, BiResult};
 use crate::state::AppState;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -28,7 +30,12 @@ impl MemType {
             MemType::Code => "code",
         }
     }
-    pub fn from_str(s: &str) -> BiResult<Self> {
+}
+
+impl FromStr for MemType {
+    type Err = BiError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "fact" => Self::Fact,
             "decision" => Self::Decision,
@@ -316,7 +323,7 @@ pub fn search(
     }
 
     let n = ranked.len();
-    let placeholders = std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
     let select_sql = format!(
         "SELECT uid, project_id, mem_type, content, tags, source_agent, importance,
                 supersedes, superseded_by, created_at, updated_at, last_access,
@@ -345,10 +352,7 @@ pub fn search(
         .collect();
     let top_uids: Vec<String> = hit_uids.iter().take(5).cloned().collect();
     if !hit_uids.is_empty() {
-        let placeholders = std::iter::repeat("?")
-            .take(hit_uids.len())
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = std::iter::repeat_n("?", hit_uids.len()).collect::<Vec<_>>().join(",");
         state.db.write(|tx| {
             let update_sql = format!(
                 "UPDATE memories SET access_count = access_count + 1, last_access = ? WHERE uid IN ({placeholders})"
@@ -478,32 +482,6 @@ fn sanitize_fts_query(q: &str, combine: FtsCombine) -> String {
     tokens.join(sep)
 }
 
-#[cfg(test)]
-mod search_tests {
-    use super::*;
-
-    #[test]
-    fn fts_or_query_matches_any_token() {
-        let q = sanitize_fts_query("hybrid search turbovec", FtsCombine::Or);
-        assert!(q.contains(" OR "));
-        assert!(q.contains("\"hybrid\"*"));
-    }
-
-    #[test]
-    fn fts_skips_single_char_tokens() {
-        let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
-        assert!(!q.contains("\"a\"*"));
-        assert!(q.contains("\"MCP\"*"));
-    }
-
-    #[test]
-    fn fts_query_strips_quotes_and_punctuation() {
-        let q = sanitize_fts_query(r#"auth: "login-flow"!"#, FtsCombine::Or);
-        assert!(q.contains("\"auth\"*"));
-        assert!(q.contains("\"login-flow\"*"));
-        assert!(!q.contains("!"));
-    }
-}
 
 pub fn list(
     state: &AppState,
@@ -616,4 +594,31 @@ fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         end_line: r.get(15)?,
         language: r.get(16)?,
     })
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn fts_or_query_matches_any_token() {
+        let q = sanitize_fts_query("hybrid search turbovec", FtsCombine::Or);
+        assert!(q.contains(" OR "));
+        assert!(q.contains("\"hybrid\"*"));
+    }
+
+    #[test]
+    fn fts_skips_single_char_tokens() {
+        let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
+        assert!(!q.contains("\"a\"*"));
+        assert!(q.contains("\"MCP\"*"));
+    }
+
+    #[test]
+    fn fts_query_strips_quotes_and_punctuation() {
+        let q = sanitize_fts_query(r#"auth: "login-flow"!"#, FtsCombine::Or);
+        assert!(q.contains("\"auth\"*"));
+        assert!(q.contains("\"login-flow\"*"));
+        assert!(!q.contains("!"));
+    }
 }

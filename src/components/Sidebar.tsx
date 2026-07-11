@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   LayoutGrid,
   Brain,
@@ -9,7 +10,7 @@ import {
   Trash2,
   FileSearch,
 } from "lucide-react";
-import { useApp, useConfirm, useContextMenu } from "../lib/store";
+import { useApp, useConfirm, useContextMenu, type View } from "../lib/store";
 import { api } from "../lib/api";
 import type { ContextMenuItem } from "./ContextMenu";
 import clsx from "clsx";
@@ -23,7 +24,7 @@ const nav = [
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
-export function Sidebar() {
+export const Sidebar = memo(function Sidebar() {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
   const agents = useApp((s) => s.agents);
@@ -53,13 +54,15 @@ export function Sidebar() {
           return (
             <button
               key={item.id}
-              onClick={() => setView(item.id as never)}
+              type="button"
+              onClick={() => setView(item.id as View)}
               className={clsx(
                 "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition",
                 active
                   ? "bg-accent-soft text-text"
                   : "text-text-muted hover:bg-surface-2 hover:text-text"
               )}
+              aria-current={active ? "page" : undefined}
             >
               <Icon
                 size={15}
@@ -99,7 +102,7 @@ export function Sidebar() {
       </div>
     </aside>
   );
-}
+});
 
 function Logo() {
   return (
@@ -119,7 +122,7 @@ function Logo() {
   );
 }
 
-function ProjectList() {
+const ProjectList = memo(function ProjectList() {
   const projects = useApp((s) => s.projects);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const setCurrentProjectId = useApp((s) => s.setCurrentProjectId);
@@ -207,6 +210,7 @@ function ProjectList() {
         return (
           <button
             key={p.id}
+            type="button"
             onClick={() => {
               setCurrentProjectId(p.id);
               setView("memories");
@@ -218,6 +222,7 @@ function ProjectList() {
                 ? "bg-surface-2 text-text"
                 : "text-text-muted hover:bg-surface-2/60 hover:text-text"
             )}
+            aria-current={active ? "true" : undefined}
           >
             <span
               className={clsx(
@@ -234,4 +239,4 @@ function ProjectList() {
       })}
     </div>
   );
-}
+});

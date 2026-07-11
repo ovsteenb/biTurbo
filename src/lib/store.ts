@@ -64,7 +64,7 @@ interface AppStore {
 
   ingestJobs: Record<string, IngestProgress>;
   startIngest: (project_id: string, root_path: string) => Promise<string>;
-  cancelIngest: (job_id: string) => void;
+  dismissIngest: (job_id: string) => void;
 
   bootstrapLoaded: boolean;
   bootstrapOnce: () => Promise<void>;
@@ -166,11 +166,12 @@ export const useApp = create<AppStore>((set, get) => ({
     set((s) => {
       const combined = [...s.memories, ...batch];
       // Cap frontend memory usage: keep the newest 500 memories.
-      const trimmed = combined.length > 500 ? combined.slice(-500) : combined;
+      const trimmed = combined.length > 500 ? combined.slice(0, 500) : combined;
+      const hasMore = batch.length === 50 && trimmed.length < 500;
       return {
         memories: trimmed,
         memoryOffset: offset + batch.length,
-        hasMoreMemories: batch.length === 50,
+        hasMoreMemories: hasMore,
       };
     });
   },
@@ -223,7 +224,7 @@ export const useApp = create<AppStore>((set, get) => ({
     }));
     return job.job_id;
   },
-  cancelIngest: (job_id) =>
+  dismissIngest: (job_id) =>
     set((s) => {
       const { [job_id]: _, ...rest } = s.ingestJobs;
       return { ingestJobs: rest };

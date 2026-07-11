@@ -346,10 +346,7 @@ pub fn code_uids_for_file(
 
 pub fn delete_memories_by_uids(tx: &rusqlite::Transaction<'_>, uids: &[String]) -> BiResult<()> {
     for chunk in uids.chunks(400) {
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = std::iter::repeat_n("?", chunk.len()).collect::<Vec<_>>().join(",");
         let sql = format!("DELETE FROM memories WHERE uid IN ({placeholders})");
         let mut stmt = tx.prepare(&sql)?;
         stmt.execute(rusqlite::params_from_iter(
@@ -365,10 +362,7 @@ pub fn delete_code_edges_for_files(
     file_uids: &[String],
 ) -> BiResult<()> {
     for chunk in file_uids.chunks(400) {
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = std::iter::repeat_n("?", chunk.len()).collect::<Vec<_>>().join(",");
         let sql = format!(
             "DELETE FROM code_edges
              WHERE project_id = ?1 AND (from_uid IN ({placeholders}) OR to_uid IN ({placeholders}))"

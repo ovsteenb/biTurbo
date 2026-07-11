@@ -40,7 +40,7 @@ When in doubt, recall. It is cheap. It is correct.
 
 ---
 
-## 3. Tool surface (16 tools, all via MCP)
+## 3. Tool surface (19 tools, all via MCP)
 
 ### Memories
 
@@ -52,6 +52,7 @@ When in doubt, recall. It is cheap. It is correct.
 | `get_memory` | Fetch one by uid. Use when you need the full record (incl. metadata, access stats). |
 | `search` | Semantic search. `query` is a natural-language question or phrase. Returns scored hits. |
 | `list` | Paginated list with filters. Use when you need the raw stream (no semantic ranking). |
+| `list_tags` | List all tags and their counts for a project. Useful for discovery. |
 | `recall_for_context` | **Use this, not raw `search`, when injecting into a prompt.** It formats results as a clean `<biTurboContext>` block. |
 
 ### Projects
@@ -74,8 +75,10 @@ When in doubt, recall. It is cheap. It is correct.
 | Tool | When to use it |
 |---|---|
 | `consolidate` | Apply exponential decay, find near-duplicates (cosine ≥ 0.95), merge them. Run on demand or schedule. Cheap on small corpora. |
+| `consolidate_status` | Check whether a consolidation run is in progress and when it last completed. |
 | `stats` | Global memory/project counts. |
 | `recent_activity` | Audit log of recent writes/reads/ingests. |
+| `bootstrap` | One-shot setup: create the default project and return basic project/state info. |
 | `register_agent` | **Call once per session** to attribute your writes. |
 
 ---

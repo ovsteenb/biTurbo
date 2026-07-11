@@ -458,7 +458,7 @@ pub fn stats(state: State<'_, AppState>) -> BiResult<Stats> {
         drop(s);
         v
     };
-    by_project.sort_by(|a, b| b.1.cmp(&a.1));
+    by_project.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let index_bytes = state.index_bytes();
 

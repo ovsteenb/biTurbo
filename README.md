@@ -11,7 +11,7 @@ Persistent · project-scoped · semantic · MCP-native.
 <br/>
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.77%2B-D4A574.svg)](https://www.rust-lang.org)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-D4A574.svg)](https://www.rust-lang.org)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
 [![MCP](https://img.shields.io/badge/MCP-19%20tools-C7A0E0.svg)](#mcp-tools)
 [![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
@@ -211,7 +211,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 | Frontend | React 18 + Vite + Tailwind 3 | Fast, mature, ergonomic |
 | State | Zustand | Tiny, no boilerplate |
 | Icons | lucide-react | Clean, consistent, tree-shakeable |
-| Backend | Rust (1.77+) | Cold start < 50ms, single binary, no Python env |
+| Backend | Rust (1.88+) | Cold start < 50ms, single binary, no Python env |
 | DB | SQLite + r2d2 + rusqlite | Local, WAL, zero-config |
 | Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
 | Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal/CPU, ~30 MB model |

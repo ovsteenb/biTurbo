@@ -1,6 +1,7 @@
+import { memo, useMemo } from "react";
 import clsx from "clsx";
 
-export function Heatmap({
+export const Heatmap = memo(function Heatmap({
   values,
   weeks = 12,
 }: {
@@ -8,8 +9,14 @@ export function Heatmap({
   weeks?: number;
 }) {
   const total = weeks * 7;
-  const padded = [...Array(Math.max(0, total - values.length)).fill(0), ...values];
-  const max = Math.max(1, ...padded);
+  const padded = useMemo(
+    () => [
+      ...Array(Math.max(0, total - values.length)).fill(0),
+      ...values.slice(-total),
+    ],
+    [values, total]
+  );
+  const max = useMemo(() => Math.max(1, ...padded), [padded]);
   const dayLabels = ["M", "", "W", "", "F", "", ""];
 
   return (
@@ -34,6 +41,7 @@ export function Heatmap({
                 <div
                   key={day}
                   title={`${v} actions`}
+                  aria-label={`${v} actions`}
                   className={clsx(
                     "h-3 w-3 rounded-sm transition",
                     v === 0
@@ -54,4 +62,4 @@ export function Heatmap({
       </div>
     </div>
   );
-}
+});

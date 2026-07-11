@@ -10,11 +10,11 @@ interface MemoryCardProps {
   memory: Memory;
   active?: boolean;
   onClick?: () => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  onContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   contextMenuItems?: ContextMenuItem[];
 }
 
-export const MemoryCard = memo(function MemoryCard({
+const MemoryCard = memo(function MemoryCard({
   memory,
   active,
   onClick,
@@ -28,18 +28,29 @@ export const MemoryCard = memo(function MemoryCard({
   const showMenu = useContextMenu();
   const handleContext =
     onContextMenu ??
-    (contextMenuItems
-      ? (e: React.MouseEvent) => {
+    (contextMenuItems && contextMenuItems.length > 0
+      ? (e: React.MouseEvent<HTMLDivElement>) => {
           e.preventDefault();
           e.stopPropagation();
           showMenu(e.clientX, e.clientY, contextMenuItems);
         }
       : undefined);
 
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick?.();
+    }
+  }
+
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-pressed={active}
       onClick={onClick}
       onContextMenu={handleContext}
+      onKeyDown={handleKeyDown}
       className={clsx("memory-card", active && "active")}>
       <div className="mb-2 flex items-center gap-2">
         <span
@@ -105,4 +116,6 @@ export const MemoryCard = memo(function MemoryCard({
       </div>
     </div>
   );
-});
+}, (prev, next) => prev.memory === next.memory && prev.active === next.active);
+
+export { MemoryCard };

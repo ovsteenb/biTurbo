@@ -108,7 +108,7 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
             rusqlite::params![id],
         )?;
         tx.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
-        log_activity(tx, Some(&id), None, "delete_project", None, None)?;
+        log_activity(tx, Some(id), None, "delete_project", None, None)?;
         Ok(())
     })?;
     state.indices.write().remove(id);

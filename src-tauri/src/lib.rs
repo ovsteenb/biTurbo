@@ -99,7 +99,7 @@ pub fn run() {
             info!("biTurbo ready @ {}", data_dir.display());
             Ok(())
         })
-        .on_window_event(|window, event| tray::on_window_event(window, event))
+        .on_window_event(tray::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::list_memories,

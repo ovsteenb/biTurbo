@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { Plus, Sparkles, Sun, Moon, Loader2 } from "lucide-react";
 import { useApp } from "../lib/store";
 import { useEffect, useState } from "react";
@@ -5,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/api";
 import type { ConsolidateReport } from "../lib/types";
 
-export function TopBar() {
+export const TopBar = memo(function TopBar() {
   const setQuickAddOpen = useApp((s) => s.setQuickAddOpen);
   const view = useApp((s) => s.view);
   const stats = useApp((s) => s.stats);
@@ -18,10 +19,15 @@ export function TopBar() {
   const toggleTheme = useApp((s) => s.toggleTheme);
   const [consolidating, setConsolidating] = useState(false);
 
-  const currentProject = projects.find((p) => p.id === currentProjectId);
+  const currentProject = useMemo(
+    () => projects.find((p) => p.id === currentProjectId),
+    [projects, currentProjectId]
+  );
+
   const ingestJobs = useApp((s) => s.ingestJobs);
-  const activeIngests = Object.values(ingestJobs).filter(
-    (j) => j.phase !== "done"
+  const activeIngests = useMemo(
+    () => Object.values(ingestJobs).filter((j) => j.phase !== "done"),
+    [ingestJobs]
   );
 
   useEffect(() => {
@@ -103,6 +109,7 @@ export function TopBar() {
       )}
 
       <button
+        type="button"
         onClick={runConsolidate}
         disabled={consolidating}
         className="btn-ghost"
@@ -113,6 +120,7 @@ export function TopBar() {
       </button>
 
       <button
+        type="button"
         onClick={toggleTheme}
         className="btn-ghost"
         title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
@@ -122,6 +130,7 @@ export function TopBar() {
       </button>
 
       <button
+        type="button"
         onClick={() => setQuickAddOpen(true)}
         className="btn-primary"
         title="Quick add (⌘K)"
@@ -132,4 +141,4 @@ export function TopBar() {
       </button>
     </header>
   );
-}
+});

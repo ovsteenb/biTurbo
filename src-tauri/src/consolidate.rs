@@ -14,9 +14,10 @@ pub struct ConsolidateReport {
 }
 
 pub fn consolidate(state: &AppState, project_id: Option<&str>) -> BiResult<ConsolidateReport> {
-    let mut report = ConsolidateReport::default();
-
-    report.decayed = apply_decay(state, project_id)?;
+    let mut report = ConsolidateReport {
+        decayed: apply_decay(state, project_id)?,
+        ..Default::default()
+    };
     let dupes = find_duplicates(state, project_id)?;
     report.duplicates_found = dupes.len();
     for (keep_uid, drop_uid) in dupes {

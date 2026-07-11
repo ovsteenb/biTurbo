@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, memo } from "react";
 import type { Memory } from "../lib/types";
 import { MEM_TYPE_META, timeAgo, shortDate, importanceDots } from "../lib/format";
 import { api } from "../lib/api";
@@ -6,7 +6,12 @@ import { useApp, useConfirm } from "../lib/store";
 import { X, Trash2, Edit3, Save, FileCode2, Hash } from "lucide-react";
 import clsx from "clsx";
 
-export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () => void }) {
+interface MemoryDetailProps {
+  memory: Memory;
+  onClose: () => void;
+}
+
+const MemoryDetail = memo(function MemoryDetail({ memory, onClose }: MemoryDetailProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(memory.content);
   const [draftTags, setDraftTags] = useState(memory.tags.join(", "));
@@ -80,8 +85,18 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
     }
   }
 
-  const meta = MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact;
-  const dots = importanceDots(memory.importance);
+  const meta = useMemo(
+    () => MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact,
+    [memory.mem_type]
+  );
+  const dots = useMemo(() => importanceDots(memory.importance), [memory.importance]);
+
+  function startEditing() {
+    setDraft(memory.content);
+    setDraftTags(memory.tags.join(", "));
+    setDraftImp(memory.importance);
+    setEditing(true);
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -104,7 +119,12 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             </span>
           </div>
         </div>
-        <button onClick={onClose} className="btn-ghost p-1.5">
+        <button
+          type="button"
+          onClick={onClose}
+          className="btn-ghost p-1.5"
+          aria-label="Close"
+        >
           <X size={14} />
         </button>
       </div>
@@ -118,6 +138,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             rows={8}
             className="input resize-none font-sans text-sm"
             autoFocus
+            aria-label="Memory content"
           />
         ) : (
           <div className="whitespace-pre-wrap text-sm leading-relaxed text-text text-pretty">
@@ -130,7 +151,8 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
           <div className="mt-3 flex items-center gap-2 rounded-md border border-orange-500/20 bg-orange-500/5 p-2.5 font-mono text-[11px] text-orange-200">
             <FileCode2 size={12} />
             <span className="truncate">
-              {memory.file_path}:{memory.start_line}-{memory.end_line}
+              {memory.file_path}
+              {memory.start_line && `:${memory.start_line}${memory.end_line ? `-${memory.end_line}` : ""}`}
             </span>
             {memory.language && (
               <span className="ml-auto rounded border border-orange-500/30 px-1.5 py-0.5 text-[10px]">
@@ -223,6 +245,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
               {related.map((r) => (
                 <button
                   key={r.uid}
+                  type="button"
                   onClick={() => setSelected(r.uid)}
                   className="block w-full rounded-md border border-border-subtle bg-surface p-2 text-left text-[11px] text-text-muted transition hover:border-border hover:bg-surface-2"
                 >
@@ -241,19 +264,19 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       <div className="flex items-center gap-2 border-t border-border-subtle p-3">
         {editing ? (
           <>
-            <button onClick={save} className="btn-primary flex-1">
+            <button type="button" onClick={save} className="btn-primary flex-1">
               <Save size={14} /> Save
             </button>
-            <button onClick={() => setEditing(false)} className="btn-outline">
+            <button type="button" onClick={() => setEditing(false)} className="btn-outline">
               Cancel
             </button>
           </>
         ) : (
           <>
-            <button onClick={() => setEditing(true)} className="btn-outline flex-1">
+            <button type="button" onClick={startEditing} className="btn-outline flex-1">
               <Edit3 size={14} /> Edit
             </button>
-            <button onClick={forget} className="btn-outline text-danger hover:bg-danger/10">
+            <button type="button" onClick={forget} className="btn-outline text-danger hover:bg-danger/10">
               <Trash2 size={14} /> Forget
             </button>
           </>
@@ -261,7 +284,9 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       </div>
     </div>
   );
-}
+}, (prev, next) => prev.memory === next.memory);
+
+export { MemoryDetail };
 
 function Meta({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (

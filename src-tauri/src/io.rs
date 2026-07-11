@@ -181,18 +181,10 @@ pub struct WatchStatus {
     pub watching: Vec<String>,
 }
 
+#[derive(Default)]
 struct WatchState {
     running: bool,
     queued: bool,
-}
-
-impl Default for WatchState {
-    fn default() -> Self {
-        Self {
-            running: false,
-            queued: false,
-        }
-    }
 }
 
 type WatchHandle = Arc<Mutex<Option<notify::RecommendedWatcher>>>;
@@ -240,48 +232,45 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
     let state_for_event = state_for_cb.clone();
 
     let mut watcher =
-        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
-            Ok(event) => {
-                if !matches!(
-                    event.kind,
-                    notify::EventKind::Create(_)
-                        | notify::EventKind::Modify(_)
-                        | notify::EventKind::Remove(_)
-                ) {
-                    return;
-                }
+        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| if let Ok(event) = res {
+            if !matches!(
+                event.kind,
+                notify::EventKind::Create(_)
+                    | notify::EventKind::Modify(_)
+                    | notify::EventKind::Remove(_)
+            ) {
+                return;
+            }
 
-                let mut state = job_state_for_cb.lock();
-                if state.running {
-                    state.queued = true;
-                    return;
-                }
-                state.running = true;
-                drop(state);
+            let mut state = job_state_for_cb.lock();
+            if state.running {
+                state.queued = true;
+                return;
+            }
+            state.running = true;
+            drop(state);
 
-                let state_clone = state_for_event.clone();
-                let pid = pid_for_event.clone();
-                let root = root_for_event.clone();
-                let job_state_for_task = job_state_for_cb.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    let _ = ingest::ingest_project(&state_clone, &pid, &root);
+            let state_clone = state_for_event.clone();
+            let pid = pid_for_event.clone();
+            let root = root_for_event.clone();
+            let job_state_for_task = job_state_for_cb.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let _ = ingest::ingest_project(&state_clone, &pid, &root);
+                let mut state = job_state_for_task.lock();
+                state.running = false;
+                if state.queued {
+                    state.queued = false;
+                    state.running = true;
+                    drop(state);
+                    let run = ingest::ingest_project(&state_clone, &pid, &root);
+                    if let Err(e) = &run {
+                        tracing::error!("watcher ingest for '{}' failed: {e}", pid);
+                    }
                     let mut state = job_state_for_task.lock();
                     state.running = false;
-                    if state.queued {
-                        state.queued = false;
-                        state.running = true;
-                        drop(state);
-                        let run = ingest::ingest_project(&state_clone, &pid, &root);
-                        if let Err(e) = &run {
-                            tracing::error!("watcher ingest for '{}' failed: {e}", pid);
-                        }
-                        let mut state = job_state_for_task.lock();
-                        state.running = false;
-                    }
-                });
-            }
-            Err(_) => {}
+                }
+            });
         }) {
             Ok(w) => w,
             Err(_) => return,

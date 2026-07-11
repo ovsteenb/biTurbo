@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  memo,
+  type ReactNode,
+} from "react";
 import { useApp } from "../lib/store";
 import clsx from "clsx";
 
@@ -20,12 +26,12 @@ const MENU_HEIGHT_ESTIMATE = 36 * 6;
  * app root, then any component can call `useContextMenu().show(x, y, items)`
  * to pop it open at the cursor.
  */
-export function ContextMenuHost() {
+export const ContextMenuHost = memo(function ContextMenuHost() {
   const cm = useApp((s) => s.contextMenu);
   const close = useApp((s) => s.closeContextMenu);
   if (!cm) return null;
   return <ContextMenu x={cm.x} y={cm.y} items={cm.items} onClose={close} />;
-}
+});
 
 function ContextMenu({
   x,
@@ -59,6 +65,14 @@ function ContextMenu({
     if (top + h > vh - 8) top = Math.max(8, vh - h - 8);
     setPos({ left, top });
   }, [x, y, items]);
+
+  // Focus the first selectable item when the menu opens.
+  useEffect(() => {
+    const first = ref.current?.querySelector<HTMLButtonElement>(
+      '[role="menuitem"]:not([disabled])'
+    );
+    first?.focus();
+  }, []);
 
   // Outside click + Escape close.
   useEffect(() => {
@@ -123,6 +137,7 @@ function ContextMenu({
     <div
       ref={ref}
       role="menu"
+      aria-label="Context menu"
       style={{ left: pos.left, top: pos.top }}
       className="fixed z-50 min-w-[180px] rounded-md border border-border bg-surface p-1 shadow-modal animate-context_in"
       onContextMenu={(e) => e.preventDefault()}
@@ -140,10 +155,13 @@ function ContextMenu({
         const active = i === activeIdx;
         return (
           <button
-            key={`${item.label}-${i}`}
+            key={`item-${i}`}
+            type="button"
             role="menuitem"
             disabled={item.disabled}
-            onMouseEnter={() => setActiveIdx(i)}
+            onMouseEnter={() => {
+              if (!item.disabled) setActiveIdx(i);
+            }}
             onClick={() => {
               if (item.disabled) return;
               item.onClick();
