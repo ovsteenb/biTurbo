@@ -50,7 +50,8 @@ ndarray = "0.16"
 
 # Embeddings
 fastembed = "4"
-ort = "2.0.0-rc.9"
+# Direct dep so we can enable `cuda` via the `cuda` crate feature below.
+ort = { version = "2.0.0-rc.9" }
 
 # MCP — using hand-rolled stdio JSON-RPC for stability.
 # Keep SDK deps out of the binary until the public MCP surface needs them.
@@ -96,6 +97,11 @@ hex = "0.4"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# ONNX Runtime CUDA EP for embeddings (needs CUDA ≥12.8 or ≥13.2 + cuDNN ≥9.19 on PATH).
+# Build: cargo build --features cuda
+# Prefer GPU with fallback: BITURBO_EMBED_EP=auto (default when feature enabled)
+# Force: BITURBO_EMBED_EP=cuda | cpu
+cuda = ["ort/cuda"]
 
 [profile.release]
 panic = "abort"

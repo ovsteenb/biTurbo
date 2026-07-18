@@ -64,9 +64,16 @@ npm install
 npm run mcp:build           # writes target/debug/biturbo-mcp
 # or for a release build:
 cd src-tauri && cargo build --release --bin biturbo-mcp
+
+# Optional: CUDA GPU embeddings (Linux + NVIDIA; needs CUDA toolkit + cuDNN)
+# cd src-tauri && cargo build --release --bin biturbo-mcp --features cuda
+# Prefer GPU with CPU fallback: BITURBO_EMBED_EP=auto (default)
+# Force: BITURBO_EMBED_EP=cuda | cpu
 ```
 
 For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your platform (Xcode CLT on macOS, webkit2gtk on Linux, MSVC build tools + WebView2 on Windows).
+
+**CUDA embeddings (optional):** build with `--features cuda`. Requires a working NVIDIA driver (Windows host driver is enough under WSL2), CUDA toolkit **≥13.2 or ≥12.8**, and **cuDNN ≥9**. Do not install a Linux NVIDIA driver inside WSL. Put `/usr/local/cuda/bin` on `PATH` and CUDA/`cuDNN` libs on `LD_LIBRARY_PATH`.
 
 ### Building for distribution
 
@@ -232,7 +239,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 | Backend | Rust (1.77+) | Cold start < 50ms, single binary, no Python env |
 | DB | SQLite + r2d2 + rusqlite | Local, WAL, zero-config |
 | Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
-| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal (macOS) / DirectML (Windows) / CPU, ~30 MB model |
+| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch; CPU by default; optional `cuda` Cargo feature (CUDA EP + CPU fallback); ~30 MB model |
 | MCP | stdio JSON-RPC | Lightweight hand-rolled MCP transport, no SDK runtime dependency |
 | Tree-sitter | 0.25 + lang crates | rust / ts / js / py / go, per-function chunks, structural code search |
 
