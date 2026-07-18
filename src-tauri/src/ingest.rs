@@ -828,6 +828,7 @@ fn language_for(lang: &str) -> Result<tree_sitter::Language, String> {
         "php" => tree_sitter_php::LANGUAGE_PHP.into(),
         "ruby" => tree_sitter_ruby::LANGUAGE.into(),
         "java" => tree_sitter_java::LANGUAGE.into(),
+        "kotlin" => tree_sitter_kotlin_ng::LANGUAGE.into(),
         "c" => tree_sitter_c::LANGUAGE.into(),
         "cpp" => tree_sitter_cpp::LANGUAGE.into(),
         "csharp" => tree_sitter_c_sharp::LANGUAGE.into(),
@@ -858,6 +859,7 @@ static LANG_BUNDLES: Lazy<HashMap<&'static str, LangBundle>> = Lazy::new(|| {
         "php",
         "ruby",
         "java",
+        "kotlin",
         "c",
         "cpp",
         "csharp",
@@ -1054,6 +1056,14 @@ fn chunk_query_src(lang: &str) -> Option<&'static str> {
             (enum_declaration) @def
         "#
         }
+        "kotlin" => {
+            r#"
+            (function_declaration) @def
+            (class_declaration) @def
+            (object_declaration) @def
+            (companion_object) @def
+        "#
+        }
         "c" => {
             r#"
             (function_definition) @def
@@ -1127,6 +1137,8 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
                         | "class_definition"
                         | "method_declaration"
                         | "type_declaration"
+                        | "object_declaration"
+                        | "companion_object"
                 ) {
                     continue;
                 }
@@ -1211,6 +1223,11 @@ fn import_query_src(lang: &str) -> Option<&'static str> {
             (import_declaration) @imp
         "#
         }
+        "kotlin" => {
+            r#"
+            (import_header) @imp
+        "#
+        }
         "c" | "cpp" => {
             r#"
             (preproc_include) @imp
@@ -1250,7 +1267,11 @@ fn collect_imports(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &st
                 }
             } else if matches!(
                 node.kind(),
-                "identifier" | "dotted_name" | "scoped_identifier"
+                "identifier"
+                    | "dotted_name"
+                    | "scoped_identifier"
+                    | "import_header"
+                    | "import_declaration"
             ) {
                 let txt = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 if !txt.is_empty() {
@@ -1431,6 +1452,7 @@ mod tests {
             "php",
             "ruby",
             "java",
+            "kotlin",
             "c",
             "cpp",
             "csharp",
