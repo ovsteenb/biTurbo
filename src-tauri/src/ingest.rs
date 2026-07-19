@@ -631,10 +631,14 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
     let mut edges: Vec<GraphEdge> = Vec::new();
 
     let mut stmt = conn.prepare(
+        // Skip the leading `// path:start-end` comment line when classifying —
+        // kind detection and labels must look at the actual code, not the path hint.
         "SELECT uid,
-                CASE WHEN instr(content, char(10)) > 0
-                     THEN substr(content, 1, instr(content, char(10)) - 1)
-                     ELSE content END AS first_line,
+                CASE
+                  WHEN content LIKE '// %' AND instr(content, char(10)) > 0
+                    THEN substr(content, instr(content, char(10)) + 1)
+                  ELSE content
+                END AS code_hint,
                 file_path, start_line, end_line, language
          FROM memories
          WHERE project_id = ?1 AND mem_type = 'code'
@@ -691,13 +695,10 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
         for m in members {
             let label = derive_label(&m.1);
             let content_hint = &m.1;
-            let kind = if content_hint.contains("class") || content_hint.contains("Class") {
-                "class"
-            } else if m.1.contains("struct") || m.1.contains("Struct") {
-                "struct"
-            } else {
-                "function"
-            };
+            // Classify from the first code line (not the path comment). Prefer
+            // declaration keywords so method bodies that mention "class" later
+            // still count as functions.
+            let kind = classify_code_kind(content_hint);
             let size = ((m.4.unwrap_or(0) - m.3.unwrap_or(0) + 1).max(1)) as usize;
             nodes.push(GraphNode {
                 uid: m.0.clone(),
@@ -732,6 +733,29 @@ pub fn get_project_graph(state: &AppState, project_id: &str) -> BiResult<GraphDa
         nodes,
         edges,
     })
+}
+
+fn classify_code_kind(content_hint: &str) -> &'static str {
+    let first = content_hint
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with('#') && !l.starts_with("/*"))
+        .unwrap_or(content_hint.trim());
+    let lower = first.to_ascii_lowercase();
+    // Kotlin/Java/TS/Python class-like declarations.
+    if lower.contains("class ")
+        || lower.starts_with("class")
+        || lower.contains("interface ")
+        || lower.contains("object ")
+        || lower.contains("enum class")
+        || lower.contains("enum ")
+    {
+        "class"
+    } else if lower.contains("struct ") || lower.starts_with("struct") {
+        "struct"
+    } else {
+        "function"
+    }
 }
 
 fn derive_label(content_hint: &str) -> String {

@@ -116,7 +116,6 @@ export function Agents() {
               {isLive && (
                 <div className="flex items-center gap-1.5">
                   <span className="relative flex h-2 w-2">
-                    <span className="absolute inline-flex h-full w-full animate-pulse_dot rounded-full bg-success opacity-75" />
                     <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
                   </span>
                   <span className="text-[10px] uppercase tracking-widest text-text-dim">

@@ -18,6 +18,8 @@
     "tauri:dev:wsl": "VITE_UI_ZOOM=1.75 npm run tauri:dev",
     "tauri:dev:cuda": "node scripts/ensure-sidecar-placeholder.mjs && tauri dev --features cuda",
     "tauri:dev:wsl:cuda": "VITE_UI_ZOOM=1.75 PATH=\"/usr/local/cuda/bin:$PATH\" LD_LIBRARY_PATH=\"/usr/lib/wsl/lib:$HOME/.local/lib/biturbo:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" npm run tauri:dev:cuda",
+    "tauri:dev:release:cuda": "node scripts/ensure-sidecar-placeholder.mjs && tauri dev --release --features cuda",
+    "tauri:run:wsl:cuda": "node scripts/run-wsl-cuda.mjs",
     "tauri:build": "node scripts/build-sidecar.mjs && tauri build",
     "tauri:build:notarized": "node scripts/build-sidecar.mjs && APPLE_ID=\"$APPLE_ID\" APPLE_PASSWORD=\"$APPLE_PASSWORD\" APPLE_TEAM_ID=\"$APPLE_TEAM_ID\" tauri build",
     "mcp:dev": "node scripts/ensure-sidecar-placeholder.mjs && cargo run --manifest-path src-tauri/Cargo.toml --bin biturbo-mcp",
