@@ -328,6 +328,11 @@ pub fn search(
         return Ok(Vec::new());
     }
 
+    let feedback_boosts = crate::recall::feedback_boosts(
+        state,
+        &ranked.iter().map(|(uid, _)| uid.clone()).collect::<Vec<_>>(),
+    )?;
+
     let n = ranked.len();
     let placeholders = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
     let select_sql = format!(
@@ -392,7 +397,8 @@ pub fn search(
         .enumerate()
         .filter_map(|(rank, (uid, base_score))| {
             by_uid.remove(&uid).map(|memory| {
-                let reranked_score = rerank_memory_score(base_score, &memory, &query_terms, rank);
+                let reranked_score = rerank_memory_score(base_score, &memory, &query_terms, rank)
+                    + feedback_boosts.get(&uid).copied().unwrap_or(0.0);
                 MemoryWithScore {
                     memory,
                     score: reranked_score,
@@ -411,7 +417,7 @@ pub fn search(
     Ok(reranked.into_iter().take(k).collect())
 }
 
-fn fts_search(
+pub(crate) fn fts_search(
     conn: &rusqlite::Connection,
     query: &str,
     project_id: &str,

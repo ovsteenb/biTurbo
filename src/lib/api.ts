@@ -12,6 +12,7 @@ import type {
   GraphData,
   BootstrapPayload,
   Operation,
+  RecallResponse,
 } from "./types";
 
 export interface RememberInput {
@@ -76,6 +77,31 @@ export const api = {
         k: params.k ?? 10,
         mem_type: params.mem_type ?? null,
       },
+    }),
+
+  recallExplain: (params: {
+    project_id?: string | null;
+    query: string;
+    k?: number;
+    mem_type?: string | null;
+  }) =>
+    invoke<RecallResponse>("recall_explain", {
+      args: {
+        project_id: params.project_id ?? null,
+        query: params.query,
+        k: params.k ?? 10,
+        mem_type: params.mem_type ?? null,
+      },
+    }),
+
+  submitRecallFeedback: (
+    recall_id: string,
+    memory_uid: string,
+    value: -1 | 1,
+    source: "explicit" | "implicit" = "explicit",
+  ) =>
+    invoke<void>("submit_recall_feedback", {
+      args: { recall_id, memory_uid, value, source },
     }),
 
   listProjects: () => invoke<Project[]>("list_projects"),

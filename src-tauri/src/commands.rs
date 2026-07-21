@@ -8,39 +8,7 @@ use crate::scheduler::ConsolidateStatus;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
-
-#[derive(Serialize)]
-pub struct Stats {
-    pub total_memories: i64,
-    pub total_projects: i64,
-    pub total_agents: i64,
-    pub by_type: Vec<(String, i64)>,
-    pub by_project: Vec<(String, i64)>,
-    pub index_bytes: u64,
-    pub recent_writes_7d: i64,
-    pub recent_reads_7d: i64,
-}
-
-#[derive(Serialize)]
-pub struct ActivityEntry {
-    pub id: i64,
-    pub project_id: Option<String>,
-    pub agent_id: Option<String>,
-    pub action: String,
-    pub memory_uid: Option<String>,
-    pub detail: Option<serde_json::Value>,
-    pub created_at: i64,
-}
-
-#[derive(Serialize)]
-pub struct AgentEntry {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub last_seen: i64,
-    pub created_at: i64,
-    pub meta: Option<serde_json::Value>,
-}
+pub use crate::application::{ActivityEntry, AgentEntry, Bootstrap, Stats};
 
 #[tauri::command]
 pub fn ping() -> &'static str {
@@ -115,6 +83,42 @@ pub fn search_memories(
         &args.query,
         args.k.unwrap_or(10),
         args.mem_type.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn recall_explain(
+    state: State<'_, AppState>,
+    args: SearchArgs,
+) -> BiResult<crate::recall::RecallResponse> {
+    crate::recall::explain(
+        state.inner(),
+        args.project_id.as_deref().unwrap_or(""),
+        &args.query,
+        args.k.unwrap_or(10),
+        args.mem_type.as_deref(),
+    )
+}
+
+#[derive(Deserialize)]
+pub struct RecallFeedbackArgs {
+    pub recall_id: String,
+    pub memory_uid: String,
+    pub value: i8,
+    pub source: Option<String>,
+}
+
+#[tauri::command]
+pub fn submit_recall_feedback(
+    state: State<'_, AppState>,
+    args: RecallFeedbackArgs,
+) -> BiResult<()> {
+    crate::recall::submit_feedback(
+        state.inner(),
+        &args.recall_id,
+        &args.memory_uid,
+        args.value,
+        args.source.as_deref().unwrap_or("explicit"),
     )
 }
 
@@ -373,139 +377,17 @@ pub fn set_project_embed_model(state: State<'_, AppState>, args: SetModelArgs) -
 
 #[tauri::command]
 pub fn stats(state: State<'_, AppState>) -> BiResult<Stats> {
-    let conn = state.db.conn()?;
-    let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-    let total_projects: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-    let total_agents: i64 = conn
-        .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
-        .unwrap_or(0);
-    let by_type = memory::count_by_type(state.inner(), None)?;
-    let mut by_project: Vec<(String, i64)> = {
-        let mut s = conn.prepare("SELECT id, memory_count FROM projects")?;
-        let v: Vec<_> = s
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(s);
-        v
-    };
-    by_project.sort_by_key(|b| std::cmp::Reverse(b.1));
-
-    let index_bytes = state.index_bytes();
-
-    let week_ago = chrono::Utc::now().timestamp_millis() - 7 * 24 * 3600 * 1000;
-    let recent_writes_7d: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM activity WHERE action IN ('write','update') AND created_at > ?1",
-        rusqlite::params![week_ago],
-        |r| r.get(0),
-    )?;
-    let recent_reads_7d: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM activity WHERE action = 'read' AND created_at > ?1",
-        rusqlite::params![week_ago],
-        |r| r.get(0),
-    )?;
-
-    Ok(Stats {
-        total_memories,
-        total_projects,
-        total_agents,
-        by_type,
-        by_project,
-        index_bytes,
-        recent_writes_7d,
-        recent_reads_7d,
-    })
-}
-
-#[derive(Serialize)]
-pub struct Bootstrap {
-    pub stats: Stats,
-    pub projects: Vec<Project>,
-    pub recent: Vec<ActivityEntry>,
-    pub tags: Vec<(String, i64)>,
-    pub agents: Vec<AgentEntry>,
-    pub consolidate: crate::scheduler::ConsolidateStatus,
+    crate::application::stats(state.inner())
 }
 
 #[tauri::command]
 pub fn bootstrap(state: State<'_, AppState>) -> BiResult<Bootstrap> {
-    Ok(Bootstrap {
-        stats: stats(state.clone())?,
-        projects: project::list(state.inner())?,
-        recent: recent_activity_inner(state.inner(), 25)?,
-        tags: memory::list_tags(state.inner(), None)?,
-        agents: list_agents_inner(state.inner())?,
-        consolidate: crate::scheduler::get_status(),
-    })
-}
-
-fn recent_activity_inner(state: &AppState, limit: usize) -> BiResult<Vec<ActivityEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, project_id, agent_id, action, memory_uid, detail, created_at
-         FROM activity ORDER BY created_at DESC LIMIT ?1",
-    )?;
-    let rows = s.query_map(rusqlite::params![limit as i64], |r| {
-        let detail_str: Option<String> = r.get(5)?;
-        let detail = detail_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(ActivityEntry {
-            id: r.get(0)?,
-            project_id: r.get(1)?,
-            agent_id: r.get(2)?,
-            action: r.get(3)?,
-            memory_uid: r.get(4)?,
-            detail,
-            created_at: r.get(6)?,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
-fn list_agents_inner(state: &AppState) -> BiResult<Vec<AgentEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, name, kind, last_seen, created_at, meta FROM agents ORDER BY last_seen DESC",
-    )?;
-    let rows = s.query_map([], |r| {
-        let meta_str: Option<String> = r.get(5)?;
-        let meta = meta_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(AgentEntry {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            kind: r.get(2)?,
-            last_seen: r.get(3)?,
-            created_at: r.get(4)?,
-            meta,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    crate::application::bootstrap(state.inner())
 }
 
 #[tauri::command]
 pub fn list_agents(state: State<'_, AppState>) -> BiResult<Vec<AgentEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, name, kind, last_seen, created_at, meta FROM agents ORDER BY last_seen DESC",
-    )?;
-    let rows = s.query_map([], |r| {
-        let meta_str: Option<String> = r.get(5)?;
-        let meta = meta_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(AgentEntry {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            kind: r.get(2)?,
-            last_seen: r.get(3)?,
-            created_at: r.get(4)?,
-            meta,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    crate::application::list_agents(state.inner())
 }
 
 #[derive(Deserialize)]
@@ -517,27 +399,7 @@ pub struct RegisterAgentArgs {
 
 #[tauri::command]
 pub fn register_agent(state: State<'_, AppState>, args: RegisterAgentArgs) -> BiResult<AgentEntry> {
-    let now = chrono::Utc::now().timestamp_millis();
-    let id = slugify(&args.name);
-    let meta_str = args.meta.as_ref().map(|v| v.to_string());
-    state.db.write(|tx| {
-        tx.execute(
-            "INSERT INTO agents(id, name, kind, last_seen, created_at, meta)
-             VALUES(?1,?2,?3,?4,?4,?5)
-             ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen,
-                                            meta = COALESCE(excluded.meta, agents.meta)",
-            rusqlite::params![id, args.name, args.kind, now, meta_str],
-        )?;
-        Ok(())
-    })?;
-    Ok(AgentEntry {
-        id,
-        name: args.name,
-        kind: args.kind,
-        last_seen: now,
-        created_at: now,
-        meta: args.meta,
-    })
+    crate::application::register_agent(state.inner(), args.name, args.kind, args.meta)
 }
 
 #[tauri::command]
@@ -545,43 +407,7 @@ pub fn recent_activity(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> BiResult<Vec<ActivityEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, project_id, agent_id, action, memory_uid, detail, created_at
-         FROM activity ORDER BY created_at DESC LIMIT ?1",
-    )?;
-    let rows = s.query_map(rusqlite::params![limit.unwrap_or(100) as i64], |r| {
-        let detail_str: Option<String> = r.get(5)?;
-        let detail = detail_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(ActivityEntry {
-            id: r.get(0)?,
-            project_id: r.get(1)?,
-            agent_id: r.get(2)?,
-            action: r.get(3)?,
-            memory_uid: r.get(4)?,
-            detail,
-            created_at: r.get(6)?,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
-fn slugify(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+    crate::application::recent_activity(state.inner(), limit.unwrap_or(100))
 }
 
 // ── MCP config auto-install ─────────────────────────────────────────────

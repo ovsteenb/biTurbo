@@ -170,6 +170,25 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             let hits = memory::search(state, &project_id, &query, k, mem_type)?;
             text(&format_context_block(&hits))
         }
+        "recall_explain" => {
+            let project_id = resolve_project_from_args(state, &args)?;
+            let query = arg_str(&args, "query")?;
+            let k = bounded_k(&args, 8, 20);
+            let mem_type = args.get("mem_type").and_then(|v| v.as_str());
+            let response = crate::recall::explain(state, &project_id, &query, k, mem_type)?;
+            text(&serde_json::to_string_pretty(&response)?)
+        }
+        "submit_recall_feedback" => {
+            let recall_id = arg_str(&args, "recall_id")?;
+            let memory_uid = arg_str(&args, "memory_uid")?;
+            let value = args.get("value").and_then(|v| v.as_i64()).unwrap_or(1) as i8;
+            let source = args
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("explicit");
+            crate::recall::submit_feedback(state, &recall_id, &memory_uid, value, source)?;
+            text("{\"recorded\":true}")
+        }
         "list_projects" => text(&serde_json::to_string_pretty(&project::list(state)?)?),
         "get_project" => {
             let id = arg_str(&args, "id")?;
@@ -206,8 +225,38 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             let root_path = arg_str(&args, "root_path")?;
             require_project(&project_id)?;
             require_path(&root_path, "root_path")?;
-            let r = ingest::ingest_project(state, &project_id, std::path::Path::new(&root_path))?;
+            let r = crate::operations::run_ingest_blocking(
+                state,
+                &project_id,
+                std::path::Path::new(&root_path),
+            )?;
             text(&serde_json::to_string_pretty(&r)?)
+        }
+        "start_ingest" => {
+            let project_id = arg_str(&args, "project_id")?;
+            let root_path = arg_str(&args, "root_path")?;
+            require_project(&project_id)?;
+            require_path(&root_path, "root_path")?;
+            let operation = crate::operations::start_ingest(
+                state,
+                &project_id,
+                std::path::Path::new(&root_path),
+            )?;
+            text(&serde_json::to_string_pretty(&operation)?)
+        }
+        "operation_status" => {
+            let id = arg_str(&args, "id")?;
+            text(&serde_json::to_string_pretty(&crate::operations::get(state, &id)?)?)
+        }
+        "list_operations" => {
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+            text(&serde_json::to_string_pretty(&crate::operations::list(state, limit)?)?)
+        }
+        "cancel_operation" => {
+            let id = arg_str(&args, "id")?;
+            text(&serde_json::to_string_pretty(
+                &crate::operations::request_cancel(state, &id)?,
+            )?)
         }
         "get_project_graph" => {
             let project_id = arg_str(&args, "project_id")?;
@@ -274,103 +323,23 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             text("{}")
         }
         "stats" => {
-            let conn = state.db.conn()?;
-            let total_memories: i64 =
-                conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-            let total_projects: i64 =
-                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-            let by_type = memory::count_by_type(state, None)?;
-            let out = json!({ "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type });
-            text(&serde_json::to_string_pretty(&out)?)
+            text(&serde_json::to_string_pretty(&crate::application::stats(state)?)?)
         }
         "bootstrap" => {
-            let conn = state.db.conn()?;
-            let total_memories: i64 =
-                conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-            let total_projects: i64 =
-                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-            let by_type = memory::count_by_type(state, None)?;
-            let projects = project::list(state)?;
-            let tags = memory::list_tags(state, None)?;
-            let recent_limit = 25_i64;
-            let mut s = conn.prepare("SELECT id, project_id, agent_id, action, memory_uid, created_at FROM activity ORDER BY created_at DESC LIMIT ?1")?;
-            let recent: Vec<Value> = s
-                .query_map(rusqlite::params![recent_limit], |r| {
-                    Ok(json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "project_id": r.get::<_, Option<String>>(1)?,
-                        "agent_id": r.get::<_, Option<String>>(2)?,
-                        "action": r.get::<_, String>(3)?,
-                        "memory_uid": r.get::<_, Option<String>>(4)?,
-                        "created_at": r.get::<_, i64>(5)?,
-                    }))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            let mut a = conn
-                .prepare("SELECT id, name, kind, last_seen FROM agents ORDER BY last_seen DESC")?;
-            let agents: Vec<Value> = a
-                .query_map([], |r| {
-                    Ok(json!({
-                        "id": r.get::<_, String>(0)?,
-                        "name": r.get::<_, String>(1)?,
-                        "kind": r.get::<_, String>(2)?,
-                        "last_seen": r.get::<_, i64>(3)?,
-                    }))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            let out = json!({
-                "stats": { "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type },
-                "projects": projects,
-                "recent": recent,
-                "tags": tags,
-                "agents": agents,
-                "consolidate": crate::scheduler::get_status(),
-            });
-            text(&serde_json::to_string_pretty(&out)?)
+            text(&serde_json::to_string_pretty(&crate::application::bootstrap(state)?)?)
         }
         "recent_activity" => {
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as i64;
-            let conn = state.db.conn()?;
-            let mut s = conn.prepare("SELECT id, project_id, agent_id, action, memory_uid, detail, created_at FROM activity ORDER BY created_at DESC LIMIT ?1")?;
-            let rows: Vec<Value> = s
-                .query_map(rusqlite::params![limit], |r| {
-                    let detail_str: Option<String> = r.get(5)?;
-                    let detail = detail_str
-                        .as_deref()
-                        .and_then(|s| serde_json::from_str::<Value>(s).ok());
-                    Ok(json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "project_id": r.get::<_, Option<String>>(1)?,
-                        "agent_id": r.get::<_, Option<String>>(2)?,
-                        "action": r.get::<_, String>(3)?,
-                        "memory_uid": r.get::<_, Option<String>>(4)?,
-                        "detail": detail,
-                        "created_at": r.get::<_, i64>(6)?,
-                    }))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            drop(s);
-            text(&serde_json::to_string_pretty(&rows)?)
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            text(&serde_json::to_string_pretty(
+                &crate::application::recent_activity(state, limit)?,
+            )?)
         }
         "register_agent" => {
             let name = arg_str(&args, "name")?;
             let kind = arg_str(&args, "kind")?;
             let meta = args.get("meta").cloned();
-            let now = chrono::Utc::now().timestamp_millis();
-            let id = slugify(&name);
-            let meta_str = meta.as_ref().map(|v| v.to_string());
-            state.db.write(|tx| {
-                tx.execute(
-                    "INSERT INTO agents(id, name, kind, last_seen, created_at, meta) VALUES(?1,?2,?3,?4,?4,?5) ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen, meta = COALESCE(excluded.meta, agents.meta)",
-                    rusqlite::params![id, name, kind, now, meta_str],
-                )?;
-                Ok(())
-            })?;
             text(&serde_json::to_string_pretty(
-                &json!({ "id": id, "name": name, "kind": kind, "last_seen": now }),
+                &crate::application::register_agent(state, name, kind, meta)?,
             )?)
         }
         "get_project_name_from_file" => {
@@ -549,22 +518,6 @@ fn format_context_block(hits: &[MemoryWithScore]) -> String {
     s
 }
 
-fn slugify(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
 fn tool_schemas() -> Value {
     serde_json::from_str(SCHEMAS_JSON).unwrap_or_else(|_| json!([]))
 }
@@ -578,11 +531,17 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"list","description":"List memories with optional filters. Newest first. Default 50.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"},"mem_type":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"}}}},
 {"name":"list_tags","description":"List tags for a project with usage counts. Newest first.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}},"required":["project_id"]}},
 {"name":"recall_for_context","description":"Build a <biTurboContext> block of top-k relevant memories. Pass project_id or root_path (reads .biTurbo).","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
+{"name":"recall_explain","description":"Recall ranked memories with source ranks, matched terms, feedback boost, and a recall id.","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
+{"name":"submit_recall_feedback","description":"Record useful or not-useful feedback for one recalled memory.","inputSchema":{"type":"object","required":["recall_id","memory_uid","value"],"properties":{"recall_id":{"type":"string"},"memory_uid":{"type":"string"},"value":{"type":"number"},"source":{"type":"string"}}}},
 {"name":"list_projects","description":"List all projects.","inputSchema":{"type":"object","properties":{}}},
 {"name":"get_project","description":"Fetch one project by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"create_project","description":"Create a new project.","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"id":{"type":"string"},"description":{"type":"string"},"root_path":{"type":"string"},"bit_width":{"type":"number"}}}},
 {"name":"delete_project","description":"Delete a project and all its memories. 'default' cannot be deleted.","inputSchema":{"type":"object","required":["project_id"],"properties":{"project_id":{"type":"string"}}}},
 {"name":"ingest_project","description":"Index a code directory via tree-sitter (22 languages, including rust/typescript/python/go/kotlin/sql/dart/lua/scala/r/powershell).","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
+{"name":"start_ingest","description":"Start an asynchronous supervised ingest and return its operation record.","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
+{"name":"operation_status","description":"Get one persisted operation by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
+{"name":"list_operations","description":"List recent supervised operations.","inputSchema":{"type":"object","properties":{"limit":{"type":"number"}}}},
+{"name":"cancel_operation","description":"Request operation cancellation at its next safe checkpoint.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"consolidate","description":"Run memory maintenance: decay, dedup (cosine >= 0.95), merge.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
 {"name":"consolidate_status","description":"Status of the background consolidate scheduler (running/idle, last run, next run).","inputSchema":{"type":"object","properties":{}}},
 {"name":"stats","description":"Global stats.","inputSchema":{"type":"object","properties":{}}},

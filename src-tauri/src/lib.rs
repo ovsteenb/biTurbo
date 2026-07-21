@@ -19,6 +19,7 @@
 //! on macOS, %APPDATA%\com.biturbo.app on Windows, ~/.local/share/com.biturbo.app on
 //! Linux). Both the GUI and the MCP server share the same on-disk state.
 
+pub mod application;
 pub mod commands;
 pub mod consolidate;
 pub mod db;
@@ -32,6 +33,7 @@ pub mod memory;
 pub mod operations;
 pub mod persistence;
 pub mod project;
+pub mod recall;
 pub mod scheduler;
 pub mod smoke;
 pub mod state;
@@ -115,6 +117,8 @@ pub fn run() {
             commands::forget_memory,
             commands::update_memory,
             commands::search_memories,
+            commands::recall_explain,
+            commands::submit_recall_feedback,
             commands::list_projects,
             commands::create_project,
             commands::delete_project,

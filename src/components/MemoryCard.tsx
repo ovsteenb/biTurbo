@@ -1,6 +1,6 @@
-import type { Memory } from "../lib/types";
+import type { Memory, RecallExplanation } from "../lib/types";
 import { MEM_TYPE_META, timeAgo, importanceDots, truncatePath, stripLeadingPathComment } from "../lib/format";
-import { FileCode2, Hash } from "lucide-react";
+import { FileCode2, Hash, ThumbsDown, ThumbsUp } from "lucide-react";
 import clsx from "clsx";
 import { memo } from "react";
 import type { ContextMenuItem } from "./ContextMenu";
@@ -13,6 +13,8 @@ interface MemoryCardProps {
   onClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   contextMenuItems?: ContextMenuItem[];
+  explanation?: RecallExplanation;
+  onFeedback?: (value: -1 | 1) => void;
 }
 
 export const MemoryCard = memo(function MemoryCard({
@@ -21,6 +23,8 @@ export const MemoryCard = memo(function MemoryCard({
   onClick,
   onContextMenu,
   contextMenuItems,
+  explanation,
+  onFeedback,
 }: MemoryCardProps) {
   const meta = MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact;
   const dots = importanceDots(memory.importance);
@@ -98,6 +102,42 @@ export const MemoryCard = memo(function MemoryCard({
         ))}
 
         <div className="ml-auto flex items-center gap-2">
+          {explanation && (
+            <span
+              className="font-mono text-[9px] text-text-dim"
+              title={`Matched: ${explanation.matched_terms.join(", ") || "semantic only"}`}
+            >
+              {explanation.vector_rank ? `v#${explanation.vector_rank}` : ""}
+              {explanation.vector_rank && explanation.fts_rank ? " · " : ""}
+              {explanation.fts_rank ? `text#${explanation.fts_rank}` : ""}
+            </span>
+          )}
+          {onFeedback && (
+            <span className="flex items-center gap-0.5">
+              <button
+                type="button"
+                title="Useful result"
+                className="rounded p-1 text-text-dim hover:bg-accent/10 hover:text-accent"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFeedback(1);
+                }}
+              >
+                <ThumbsUp size={10} />
+              </button>
+              <button
+                type="button"
+                title="Not useful"
+                className="rounded p-1 text-text-dim hover:bg-danger/10 hover:text-danger"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFeedback(-1);
+                }}
+              >
+                <ThumbsDown size={10} />
+              </button>
+            </span>
+          )}
           {memory.source_agent && (
             <span className="font-mono text-[10px] text-text-dim">
               {memory.source_agent}

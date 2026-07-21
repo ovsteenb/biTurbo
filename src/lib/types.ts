@@ -31,6 +31,22 @@ export interface MemoryWithScore extends Memory {
   score: number;
 }
 
+export interface RecallExplanation {
+  vector_rank: number | null;
+  fts_rank: number | null;
+  matched_terms: string[];
+  feedback_boost: number;
+}
+
+export interface ExplainedMemory extends MemoryWithScore {
+  explanation: RecallExplanation;
+}
+
+export interface RecallResponse {
+  recall_id: string;
+  results: ExplainedMemory[];
+}
+
 export interface Project {
   id: string;
   name: string;
