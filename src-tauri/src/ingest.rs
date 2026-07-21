@@ -813,6 +813,12 @@ fn detect_language(p: &Path) -> Option<&'static str> {
         "sh" | "bash" => "bash",
         "html" | "htm" => "html",
         "css" => "css",
+        "sql" => "sql",
+        "dart" => "dart",
+        "lua" => "lua",
+        "scala" | "sc" => "scala",
+        "r" | "R" => "r",
+        "ps1" | "psm1" => "powershell",
         _ => return None,
     })
 }
@@ -835,6 +841,12 @@ fn language_for(lang: &str) -> Result<tree_sitter::Language, String> {
         "bash" => tree_sitter_bash::LANGUAGE.into(),
         "html" => tree_sitter_html::LANGUAGE.into(),
         "css" => tree_sitter_css::LANGUAGE.into(),
+        "sql" => tree_sitter_sequel::LANGUAGE.into(),
+        "dart" => tree_sitter_dart_orchard::LANGUAGE.into(),
+        "lua" => tree_sitter_lua::LANGUAGE.into(),
+        "scala" => tree_sitter_scala::LANGUAGE.into(),
+        "r" => tree_sitter_r::LANGUAGE.into(),
+        "powershell" => tree_sitter_powershell::LANGUAGE.into(),
         _ => return Err(format!("unsupported lang {lang}")),
     };
     Ok(lang)
@@ -848,27 +860,34 @@ struct LangBundle {
     import_query: Option<Query>,
 }
 
+const SUPPORTED_LANGUAGES: &[&str] = &[
+    "rust",
+    "typescript",
+    "javascript",
+    "python",
+    "go",
+    "swift",
+    "php",
+    "ruby",
+    "java",
+    "kotlin",
+    "c",
+    "cpp",
+    "csharp",
+    "bash",
+    "html",
+    "css",
+    "sql",
+    "dart",
+    "lua",
+    "scala",
+    "r",
+    "powershell",
+];
+
 static LANG_BUNDLES: Lazy<HashMap<&'static str, LangBundle>> = Lazy::new(|| {
-    let langs = [
-        "rust",
-        "typescript",
-        "javascript",
-        "python",
-        "go",
-        "swift",
-        "php",
-        "ruby",
-        "java",
-        "kotlin",
-        "c",
-        "cpp",
-        "csharp",
-        "bash",
-        "html",
-        "css",
-    ];
     let mut map = HashMap::new();
-    for name in langs {
+    for &name in SUPPORTED_LANGUAGES {
         let Ok(language) = language_for(name) else {
             continue;
         };
@@ -1098,6 +1117,56 @@ fn chunk_query_src(lang: &str) -> Option<&'static str> {
             (rule_set) @def
         "#
         }
+        "sql" => {
+            r#"
+            (create_table) @def
+            (create_view) @def
+            (create_materialized_view) @def
+            (create_function) @def
+            (create_trigger) @def
+            (create_type) @def
+        "#
+        }
+        "dart" => {
+            r#"
+            (class_definition) @def
+            (enum_declaration) @def
+            (mixin_declaration) @def
+            (extension_declaration) @def
+            (function_signature) @def
+            (local_function_declaration) @def
+        "#
+        }
+        "lua" => {
+            r#"
+            (function_declaration) @def
+            (function_definition) @def
+        "#
+        }
+        "scala" => {
+            r#"
+            (class_definition) @def
+            (object_definition) @def
+            (trait_definition) @def
+            (enum_definition) @def
+            (function_definition) @def
+        "#
+        }
+        "r" => {
+            r#"
+            (binary_operator
+              lhs: (identifier)
+              operator: ["<-" "<<-" "="]
+              rhs: (function_definition)) @def
+        "#
+        }
+        "powershell" => {
+            r#"
+            (function_statement) @def
+            (class_statement) @def
+            (enum_statement) @def
+        "#
+        }
         _ => return None,
     };
     Some(query_src)
@@ -1119,31 +1188,19 @@ fn collect_chunks(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &str
         let mut matches = cursor.matches(query, root, source.as_bytes());
         while let Some(m) = matches.next() {
             for cap in m.captures {
-                let node = cap.node;
-                if !matches!(
-                    node.kind(),
-                    "function_item"
-                        | "struct_item"
-                        | "enum_item"
-                        | "trait_item"
-                        | "impl_item"
-                        | "function_declaration"
-                        | "class_declaration"
-                        | "method_definition"
-                        | "interface_declaration"
-                        | "type_alias_declaration"
-                        | "export_statement"
-                        | "function_definition"
-                        | "class_definition"
-                        | "method_declaration"
-                        | "type_declaration"
-                        | "object_declaration"
-                        | "companion_object"
-                ) {
+                if query.capture_names()[cap.index as usize] != "def" {
                     continue;
                 }
+                let node = cap.node;
+                let end_node = if node.kind() == "function_signature" {
+                    node.next_named_sibling()
+                        .filter(|sibling| sibling.kind() == "function_body")
+                        .unwrap_or(node)
+                } else {
+                    node
+                };
                 let start = node.start_position().row;
-                let end = node
+                let end = end_node
                     .end_position()
                     .row
                     .min(start + 200)
@@ -1243,6 +1300,30 @@ fn import_query_src(lang: &str) -> Option<&'static str> {
             (import_statement) @imp
         "#
         }
+        "dart" => {
+            r#"
+            (library_import
+              (import_specification
+                (configurable_uri
+                  (uri (string_literal) @imp))))
+            (library_export
+              (configurable_uri
+                (uri (string_literal) @imp)))
+        "#
+        }
+        "lua" => {
+            r#"
+            (function_call
+              name: (identifier) @fn
+              arguments: (arguments (string) @imp)
+              (#eq? @fn "require"))
+        "#
+        }
+        "scala" => {
+            r#"
+            (import_declaration) @imp
+        "#
+        }
         _ => return None,
     };
     Some(query_src)
@@ -1258,20 +1339,33 @@ fn collect_imports(bundle: &LangBundle, root: tree_sitter::Node<'_>, source: &st
     let mut matches = cursor.matches(query, root, source.as_bytes());
     while let Some(m) = matches.next() {
         for cap in m.captures {
+            if query.capture_names()[cap.index as usize] != "imp" {
+                continue;
+            }
             let node = cap.node;
-            if node.kind() == "string" || node.kind() == "interpreted_string_literal" {
+            if matches!(
+                node.kind(),
+                "string" | "string_literal" | "interpreted_string_literal"
+            ) {
                 let raw = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 let cleaned = raw.trim_matches(|c| c == '"' || c == '\'').to_string();
                 if !cleaned.is_empty() {
                     imports.push(cleaned);
                 }
+            } else if matches!(node.kind(), "import_declaration" | "import_header") {
+                let raw = node.utf8_text(source.as_bytes()).unwrap_or("");
+                let cleaned = raw
+                    .strip_prefix("import")
+                    .unwrap_or(raw)
+                    .trim()
+                    .trim_end_matches(';')
+                    .to_string();
+                if !cleaned.is_empty() {
+                    imports.push(cleaned);
+                }
             } else if matches!(
                 node.kind(),
-                "identifier"
-                    | "dotted_name"
-                    | "scoped_identifier"
-                    | "import_header"
-                    | "import_declaration"
+                "identifier" | "dotted_name" | "scoped_identifier"
             ) {
                 let txt = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 if !txt.is_empty() {
@@ -1311,6 +1405,16 @@ fn resolve_import(
         return None;
     }
 
+    if import.contains('.') && !import.contains(':') {
+        let candidate = root.join(import.replace('.', "/"));
+        for c in expand_candidates(&candidate) {
+            if c.exists() {
+                let rel = c.strip_prefix(root).ok()?.to_string_lossy().to_string();
+                return Some(rel);
+            }
+        }
+    }
+
     let first = import.split("::").next().unwrap_or(import);
     let first = first.split('.').next().unwrap_or(first);
     if let Some(matches) = by_basename.get(first) {
@@ -1328,7 +1432,10 @@ fn resolve_import(
 
 fn expand_candidates(p: &Path) -> Vec<PathBuf> {
     let mut out = vec![p.to_path_buf()];
-    let exts = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "go"];
+    let exts = [
+        "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "go", "dart", "lua", "scala", "sc",
+        "r", "R", "ps1", "psm1",
+    ];
     for ext in exts {
         out.push(p.with_extension(ext));
     }
@@ -1441,31 +1548,200 @@ mod tests {
     }
 
     #[test]
+    fn parse_one_file_extracts_sql_definitions() {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("schema.sql");
+        std::fs::write(
+            &file,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);\n\nCREATE VIEW active_users AS SELECT * FROM users;\n",
+        )
+        .unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+        assert_eq!(pf.lang, "sql");
+        assert!(
+            pf.chunks.len() >= 2,
+            "chunks: {:?}",
+            pf.chunks
+                .iter()
+                .map(PendingChunk::db_content)
+                .collect::<Vec<_>>()
+        );
+        assert!(pf.chunks.iter().any(|c| c.db_content().contains("users")));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_one_file_extracts_dart_definitions_and_imports() {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("widget.dart");
+        std::fs::write(
+            &file,
+            "import 'package:flutter/widgets.dart';\n\nvoid main() {\n  runApp(CounterWidget());\n}\n\nclass CounterWidget {\n  int value() => 1;\n}\n",
+        )
+        .unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+        assert_eq!(pf.lang, "dart");
+        assert!(pf
+            .chunks
+            .iter()
+            .any(|c| c.db_content().contains("CounterWidget")));
+        assert!(pf.chunks.iter().any(|c| {
+            let content = c.db_content();
+            content.contains("void main()") && content.contains("runApp")
+        }));
+        assert_eq!(pf.imports, vec!["package:flutter/widgets.dart"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_one_file_extracts_lua_definitions_and_requires() {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("player.lua");
+        std::fs::write(
+            &file,
+            "local physics = require('game.physics')\n\nfunction spawn_player()\n  return physics.spawn()\nend\n",
+        )
+        .unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+        assert_eq!(pf.lang, "lua");
+        assert!(pf
+            .chunks
+            .iter()
+            .any(|c| c.db_content().contains("spawn_player")));
+        assert_eq!(pf.imports, vec!["game.physics"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_one_file_extracts_scala_definitions_and_imports() {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Service.scala");
+        std::fs::write(
+            &file,
+            "import scala.concurrent.Future\n\nclass UserService {\n  def load(): Future[String] = Future.successful(\"ok\")\n}\n",
+        )
+        .unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+        assert_eq!(pf.lang, "scala");
+        assert!(pf
+            .chunks
+            .iter()
+            .any(|c| c.db_content().contains("UserService")));
+        assert_eq!(pf.imports, vec!["scala.concurrent.Future"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_one_file_extracts_named_r_functions() {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("analysis.R");
+        std::fs::write(
+            &file,
+            "summarise_data <- function(values) {\n  mean(values)\n}\n",
+        )
+        .unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+        assert_eq!(pf.lang, "r");
+        assert!(pf
+            .chunks
+            .iter()
+            .any(|c| c.db_content().contains("summarise_data")));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_one_file_extracts_powershell_definitions() {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Deploy.ps1");
+        std::fs::write(
+            &file,
+            "function Invoke-Deploy {\n  param([string]$Environment)\n  Write-Output $Environment\n}\n",
+        )
+        .unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+        assert_eq!(pf.lang, "powershell");
+        assert!(pf
+            .chunks
+            .iter()
+            .any(|c| c.db_content().contains("Invoke-Deploy")));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_import_maps_dotted_modules_to_new_language_files() {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        let lua_module = dir.join("game/physics.lua");
+        let scala_module = dir.join("app/models/User.scala");
+        std::fs::create_dir_all(lua_module.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(scala_module.parent().unwrap()).unwrap();
+        std::fs::write(&lua_module, "return {}\n").unwrap();
+        std::fs::write(&scala_module, "class User\n").unwrap();
+
+        assert_eq!(
+            resolve_import(
+                "game.physics",
+                &dir.join("main.lua"),
+                &dir,
+                &BTreeMap::new()
+            ),
+            Some("game/physics.lua".to_string())
+        );
+        assert_eq!(
+            resolve_import(
+                "app.models.User",
+                &dir.join("Main.scala"),
+                &dir,
+                &BTreeMap::new()
+            ),
+            Some("app/models/User.scala".to_string())
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn lang_bundles_compile_for_all_languages() {
-        for lang in [
-            "rust",
-            "typescript",
-            "javascript",
-            "python",
-            "go",
-            "swift",
-            "php",
-            "ruby",
-            "java",
-            "kotlin",
-            "c",
-            "cpp",
-            "csharp",
-            "bash",
-            "css",
-        ] {
+        for &lang in SUPPORTED_LANGUAGES {
             let bundle = LANG_BUNDLES
                 .get(lang)
                 .unwrap_or_else(|| panic!("no bundle for {lang}"));
-            assert!(
-                bundle.chunk_query.is_some(),
-                "chunk query failed to compile for {lang}"
-            );
+            if lang != "html" {
+                assert!(
+                    bundle.chunk_query.is_some(),
+                    "chunk query failed to compile for {lang}"
+                );
+            }
         }
     }
 }

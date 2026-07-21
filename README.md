@@ -234,7 +234,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 | Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
 | Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal (macOS) / DirectML (Windows) / CPU, ~30 MB model |
 | MCP | stdio JSON-RPC | Lightweight hand-rolled MCP transport, no SDK runtime dependency |
-| Tree-sitter | 0.25 + lang crates | rust / ts / js / py / go, per-function chunks, structural code search |
+| Tree-sitter | 0.25 + lang crates | 22 languages, definition-level chunks, structural code search |
 
 ---
 
@@ -243,7 +243,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 ### Shipped
 
 - [x] Per-project turbovec IdMapIndex with hybrid allowlist filters
-- [x] Tree-sitter indexed code (5 languages)
+- [x] Tree-sitter indexed code (22 languages, including SQL, Dart, Lua, Scala, R, and PowerShell)
 - [x] MCP stdio server with 19 tools
 - [x] Web-viewer + graph view (canvas, Barnes–Hut in worker)
 - [x] Dark + light theme, persistent
@@ -320,4 +320,3 @@ The eval seeds a temporary project from `evals/recall-golden.json`, runs `search
 Recall uses hybrid vector + SQLite FTS retrieval, then applies a cheap second-stage reranker before formatting context.
 
 The reranker keeps semantic relevance as the base score, then adds small boosts for exact query-term matches in content, file path, tags, and language, plus gentle boosts for recent, important, and repeatedly accessed memories. This makes recall feel smarter without adding a heavy cross-encoder or extra model.
-
