@@ -29,6 +29,7 @@ pub mod ingest;
 pub mod io;
 pub mod mcp;
 pub mod memory;
+pub mod operations;
 pub mod persistence;
 pub mod project;
 pub mod scheduler;
@@ -99,6 +100,7 @@ pub fn run() {
             state.app = Some(app.handle().clone());
             let state_arc = Arc::new(state);
             scheduler::spawn(state_arc.clone());
+            let _ = operations::resume_pending(state_arc.clone());
             io::resume_watches(&state_arc);
             app.manage((*state_arc).clone());
             info!("biTurbo ready @ {}", data_dir.display());
@@ -120,6 +122,9 @@ pub fn run() {
             commands::get_project,
             commands::ingest_project,
             commands::ingest_multiple_projects,
+            commands::operation_status,
+            commands::list_operations,
+            commands::cancel_operation,
             commands::get_project_graph,
             commands::list_tags,
             commands::consolidate_now,

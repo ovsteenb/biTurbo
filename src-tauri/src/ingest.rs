@@ -181,8 +181,21 @@ struct ParsedFile {
 }
 
 pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResult<IngestResult> {
+    ingest_project_controlled(state, project_id, root, None)
+}
+
+pub fn ingest_project_controlled(
+    state: &AppState,
+    project_id: &str,
+    root: &Path,
+    operation_id: Option<&str>,
+) -> BiResult<IngestResult> {
     if !root.is_dir() {
         return Err(BiError::Ingest(format!("not a dir: {}", root.display())));
+    }
+    check_cancelled(state, operation_id)?;
+    if let Some(id) = operation_id {
+        crate::operations::update_progress(state, id, "scanning", 0, 1, None)?;
     }
     let mut result = IngestResult {
         project_id: project_id.to_string(),
@@ -269,6 +282,10 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
             })
             .collect()
     });
+    check_cancelled(state, operation_id)?;
+    if let Some(id) = operation_id {
+        crate::operations::update_progress(state, id, "parsing", files.len(), files.len(), None)?;
+    }
 
     let mut current_rels: HashSet<String> = HashSet::new();
     let mut file_uids: BTreeMap<String, String> = BTreeMap::new();
@@ -356,6 +373,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
     // only after that source-of-truth commit succeeds.
     let total_chunks = pending_chunks.len();
     for wave in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
+        check_cancelled(state, operation_id)?;
         for c in wave {
             let key = format!("{}\0{}\0member_of", c.uid, c.file_uid);
             if edge_keys.insert(key) {
@@ -537,6 +555,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         Ok(())
     })?;
 
+    check_cancelled(state, operation_id)?;
     emit_progress(
         state,
         project_id,
@@ -546,11 +565,30 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         None,
         total_chunks,
     );
+    if let Some(id) = operation_id {
+        crate::operations::update_progress(
+            state,
+            id,
+            "embedding",
+            total_chunks,
+            total_chunks,
+            None,
+        )?;
+    }
     state.replay_index_mutations(project_id)?;
 
     state.embedder.force_release();
 
     Ok(result)
+}
+
+fn check_cancelled(state: &AppState, operation_id: Option<&str>) -> BiResult<()> {
+    if let Some(id) = operation_id {
+        if crate::operations::is_cancel_requested(state, id)? {
+            return Err(BiError::Ingest("operation cancelled".into()));
+        }
+    }
+    Ok(())
 }
 
 /// Ingest multiple projects sequentially. Per-project parsing still uses a

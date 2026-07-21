@@ -11,6 +11,7 @@ import type {
   ConsolidateStatus,
   GraphData,
   BootstrapPayload,
+  Operation,
 } from "./types";
 
 export interface RememberInput {
@@ -110,6 +111,10 @@ export const api = {
     invoke<IngestJob>("ingest_project", {
       args: { project_id, root_path },
     }),
+
+  operationStatus: (id: string) => invoke<Operation>("operation_status", { id }),
+  listOperations: (limit = 100) => invoke<Operation[]>("list_operations", { limit }),
+  cancelOperation: (id: string) => invoke<Operation>("cancel_operation", { id }),
 
   getProjectGraph: (project_id: string) =>
     invoke<GraphData>("get_project_graph", {

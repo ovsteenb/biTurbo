@@ -113,6 +113,24 @@ export interface IngestError {
   error: string;
 }
 
+export interface Operation {
+  id: string;
+  kind: string;
+  project_id: string | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  phase: string | null;
+  current: number;
+  total: number;
+  checkpoint: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  cancel_requested: boolean;
+  created_at: number;
+  updated_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
 export interface ConsolidateReport {
   decayed: number;
   duplicates_found: number;

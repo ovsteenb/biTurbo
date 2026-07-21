@@ -7,7 +7,7 @@ use crate::project::{self, CreateProjectInput, Project};
 use crate::scheduler::ConsolidateStatus;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
+use tauri::State;
 
 #[derive(Serialize)]
 pub struct Stats {
@@ -192,61 +192,11 @@ pub struct MultiIngestDone {
 
 #[tauri::command]
 pub fn ingest_project(state: State<'_, AppState>, args: IngestArgs) -> BiResult<IngestJobResponse> {
-    project::get(state.inner(), &args.project_id).map_err(|_| {
-        crate::error::BiError::Invalid(format!(
-            "project '{}' does not exist — create it first",
-            args.project_id
-        ))
-    })?;
     let root = std::path::PathBuf::from(&args.root_path);
-    if !root.exists() {
-        return Err(crate::error::BiError::Invalid(format!(
-            "root_path '{}' does not exist on disk",
-            args.root_path
-        )));
-    }
-
-    let job_id = format!("ing-{}", uuid::Uuid::new_v4());
-    let state_clone = state.inner().clone();
-    let project_id = args.project_id.clone();
-    let job_id_for_thread = job_id.clone();
-
-    std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        match ingest::ingest_project(&state_clone, &project_id, &root) {
-            Ok(result) => {
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "ingest:done",
-                        IngestDone {
-                            job_id: job_id_for_thread.clone(),
-                            project_id: project_id.clone(),
-                            files_indexed: result.files_indexed,
-                            chunks_indexed: result.chunks_indexed,
-                            edges_created: result.edges_created,
-                            elapsed_ms,
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "ingest:error",
-                        IngestError {
-                            job_id: job_id_for_thread,
-                            project_id: project_id.clone(),
-                            error: e.to_string(),
-                        },
-                    );
-                }
-            }
-        }
-    });
+    let operation = crate::operations::start_ingest(state.inner(), &args.project_id, &root)?;
 
     Ok(IngestJobResponse {
-        job_id,
+        job_id: operation.id,
         project_id: args.project_id,
     })
 }
@@ -256,68 +206,15 @@ pub fn ingest_multiple_projects(
     state: State<'_, AppState>,
     args: MultiIngestArgs,
 ) -> BiResult<IngestJobResponse> {
-    // Validate all projects exist and paths exist
-    for (project_id, root_path) in &args.projects {
-        project::get(state.inner(), project_id).map_err(|_| {
-            crate::error::BiError::Invalid(format!(
-                "project '{}' does not exist — create it first",
-                project_id
-            ))
-        })?;
-        let root = std::path::PathBuf::from(root_path);
-        if !root.exists() {
-            return Err(crate::error::BiError::Invalid(format!(
-                "root_path '{}' for project '{}' does not exist on disk",
-                root_path, project_id
-            )));
-        }
-    }
-
-    let job_id = format!("multi-ing-{}", uuid::Uuid::new_v4());
-    let state_clone = state.inner().clone();
-    let job_id_for_thread = job_id.clone();
     let projects: Vec<(String, std::path::PathBuf)> = args
         .projects
         .into_iter()
         .map(|(project_id, root_path)| (project_id, std::path::PathBuf::from(root_path)))
         .collect();
-
-    std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        match ingest::ingest_multiple_projects(&state_clone, projects) {
-            Ok(result) => {
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "multi-ingest:done",
-                        MultiIngestDone {
-                            job_id: job_id_for_thread.clone(),
-                            total_files_indexed: result.total_files_indexed,
-                            total_chunks_indexed: result.total_chunks_indexed,
-                            total_edges_created: result.total_edges_created,
-                            elapsed_ms,
-                            results: result.results,
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "ingest:error",
-                        IngestError {
-                            job_id: job_id_for_thread,
-                            project_id: "multiple".to_string(),
-                            error: e.to_string(),
-                        },
-                    );
-                }
-            }
-        }
-    });
+    let operation = crate::operations::start_multi_ingest(state.inner(), projects)?;
 
     Ok(IngestJobResponse {
-        job_id,
+        job_id: operation.id,
         project_id: "multiple".to_string(),
     })
 }
@@ -342,8 +239,34 @@ pub fn consolidate_now(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> BiResult<ConsolidateStatus> {
-    crate::scheduler::enqueue(state.inner(), project_id)?;
-    Ok(crate::scheduler::get_status())
+    crate::operations::start_consolidate(state.inner(), project_id.as_deref())?;
+    let mut status = crate::scheduler::get_status();
+    status.queued = true;
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn operation_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::get(state.inner(), &id)
+}
+
+#[tauri::command]
+pub fn list_operations(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> BiResult<Vec<crate::operations::Operation>> {
+    crate::operations::list(state.inner(), limit.unwrap_or(100))
+}
+
+#[tauri::command]
+pub fn cancel_operation(
+    state: State<'_, AppState>,
+    id: String,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::request_cancel(state.inner(), &id)
 }
 
 #[tauri::command]

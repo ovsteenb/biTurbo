@@ -79,6 +79,7 @@ impl AppState {
         // Ensure index files exist on disk, but do NOT load them into memory.
         state.refresh_indices()?;
         state.replay_all_index_mutations()?;
+        crate::operations::recover_interrupted(&state)?;
 
         // Debounced index flusher + LRU evictor. A plain thread (not tokio)
         // so it runs in every consumer of AppState.
