@@ -82,7 +82,11 @@ fn prepare_database(db_path: &Path) -> BiResult<()> {
 
     if let Err(error) = run_migrations(&mut conn) {
         if let Some(path) = &backup {
-            let _ = conn.restore(DatabaseName::Main, path, None::<fn(rusqlite::backup::Progress)>);
+            let _ = conn.restore(
+                DatabaseName::Main,
+                path,
+                None::<fn(rusqlite::backup::Progress)>,
+            );
         }
         let _ = fs2::FileExt::unlock(&lock);
         return Err(error);
@@ -537,10 +541,8 @@ mod migration_tests {
     use super::*;
 
     fn temp_db() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "biturbo-migration-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-migration-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("biturbo.db")
     }
@@ -571,9 +573,11 @@ mod migration_tests {
 
         let backups = db_path.parent().unwrap().join("backups");
         assert!(backups.read_dir().unwrap().any(|entry| {
-            entry
-                .ok()
-                .is_some_and(|e| e.file_name().to_string_lossy().starts_with("biturbo-pre-v1-"))
+            entry.ok().is_some_and(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("biturbo-pre-v1-")
+            })
         }));
 
         std::fs::remove_dir_all(db_path.parent().unwrap()).ok();

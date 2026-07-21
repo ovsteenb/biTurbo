@@ -63,7 +63,7 @@ pub fn spawn(state: Arc<AppState>) {
         interval.tick().await;
         loop {
             interval.tick().await;
-            state_for_release.embedder.release_if_idle();
+            state_for_release.release_idle_embedders();
         }
     });
 

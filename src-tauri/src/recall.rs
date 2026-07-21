@@ -52,7 +52,8 @@ pub fn explain(
     } else {
         None
     };
-    let vector_hits = state.embed_and_search(project_id, query, candidate_k, allowlist.as_deref())?;
+    let vector_hits =
+        state.embed_and_search(project_id, query, candidate_k, allowlist.as_deref())?;
     let conn = state.db.conn()?;
     let fts_hits = memory::fts_search(&conn, query, project_id, mem_type, candidate_k)?;
     drop(conn);
@@ -68,7 +69,10 @@ pub fn explain(
         .collect();
     let boosts = feedback_boosts(
         state,
-        &hits.iter().map(|hit| hit.memory.uid.clone()).collect::<Vec<_>>(),
+        &hits
+            .iter()
+            .map(|hit| hit.memory.uid.clone())
+            .collect::<Vec<_>>(),
     )?;
     let query_terms = normalized_terms(query);
     let results: Vec<ExplainedMemory> = hits
@@ -93,7 +97,10 @@ pub fn explain(
         })
         .collect();
     let recall_id = format!("recall-{}", uuid::Uuid::new_v4());
-    let result_uids: Vec<&str> = results.iter().map(|item| item.hit.memory.uid.as_str()).collect();
+    let result_uids: Vec<&str> = results
+        .iter()
+        .map(|item| item.hit.memory.uid.as_str())
+        .collect();
     let explanations: Vec<&RecallExplanation> =
         results.iter().map(|item| &item.explanation).collect();
     state.db.write(|tx| {
@@ -206,7 +213,8 @@ mod tests {
 
     #[test]
     fn explicit_feedback_produces_bounded_reversible_boost() {
-        let dir = std::env::temp_dir().join(format!("biturbo-recall-test-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-recall-test-{}", uuid::Uuid::new_v4()));
         let state = AppState::open(&dir).unwrap();
         let memory = remember(
             &state,

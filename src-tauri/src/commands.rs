@@ -1,5 +1,6 @@
 //! Tauri IPC commands. The frontend calls these via `invoke<T>("name", { args })`.
 
+pub use crate::application::{ActivityEntry, AgentEntry, Bootstrap, Stats};
 use crate::error::BiResult;
 use crate::ingest;
 use crate::memory::{self, Memory, MemoryWithScore, RememberInput, UpdateInput};
@@ -8,7 +9,6 @@ use crate::scheduler::ConsolidateStatus;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
-pub use crate::application::{ActivityEntry, AgentEntry, Bootstrap, Stats};
 
 #[tauri::command]
 pub fn ping() -> &'static str {
@@ -422,7 +422,11 @@ pub struct ResolveMcpBinaryResult {
 /// Tries: current_exe parent dir → dev build paths → bare name fallback.
 #[tauri::command]
 pub fn resolve_mcp_binary_path() -> ResolveMcpBinaryResult {
-    let exe_name = if cfg!(windows) { "biturbo-mcp.exe" } else { "biturbo-mcp" };
+    let exe_name = if cfg!(windows) {
+        "biturbo-mcp.exe"
+    } else {
+        "biturbo-mcp"
+    };
 
     // 1. Look next to the running app binary (installed builds)
     if let Ok(exe) = std::env::current_exe() {
@@ -482,24 +486,34 @@ pub fn install_mcp_config(
     let bin = resolve_mcp_binary_path();
     let bin_path = &bin.path;
 
-    let home = dirs::home_dir().ok_or_else(|| {
-        crate::error::BiError::Invalid("cannot resolve home directory".into())
-    })?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| crate::error::BiError::Invalid("cannot resolve home directory".into()))?;
 
     let (config_path, format): (std::path::PathBuf, &str) = match args.target.as_str() {
         "cursor" => (home.join(".cursor").join("mcp.json"), "json-cursor"),
-        "windsurf" => (home.join(".codeium").join("windsurf").join("mcp_config.json"), "json-cursor"),
+        "windsurf" => (
+            home.join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json"),
+            "json-cursor",
+        ),
         "claude" => (home.join(".claude.json"), "json-cursor"),
         "opencode" => {
             let base = if cfg!(target_os = "macos") {
-                home.join("Library").join("Application Support").join("opencode")
+                home.join("Library")
+                    .join("Application Support")
+                    .join("opencode")
             } else {
                 home.join(".config").join("opencode")
             };
             (base.join("opencode.json"), "json-opencode")
         }
         "codex" => (home.join(".codex").join("config.toml"), "toml-codex"),
-        other => return Err(crate::error::BiError::Invalid(format!("unknown target: {other}"))),
+        other => {
+            return Err(crate::error::BiError::Invalid(format!(
+                "unknown target: {other}"
+            )))
+        }
     };
 
     // Create parent dirs
@@ -516,7 +530,10 @@ pub fn install_mcp_config(
             // Cursor/Windsurf/Claude: { "mcpServers": { "biturbo": { ... } } }
             let mut root: serde_json::Value = if existed {
                 let content = std::fs::read_to_string(&config_path).map_err(|e| {
-                    crate::error::BiError::Invalid(format!("failed to read {}: {e}", config_path.display()))
+                    crate::error::BiError::Invalid(format!(
+                        "failed to read {}: {e}",
+                        config_path.display()
+                    ))
                 })?;
                 serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
             } else {
@@ -539,14 +556,20 @@ pub fn install_mcp_config(
                 crate::error::BiError::Invalid(format!("failed to serialize JSON: {e}"))
             })?;
             std::fs::write(&config_path, output).map_err(|e| {
-                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+                crate::error::BiError::Invalid(format!(
+                    "failed to write {}: {e}",
+                    config_path.display()
+                ))
             })?;
         }
         "json-opencode" => {
             // OpenCode: { "mcp": { "biturbo": { "type": "local", "command": [...], ... } } }
             let mut root: serde_json::Value = if existed {
                 let content = std::fs::read_to_string(&config_path).map_err(|e| {
-                    crate::error::BiError::Invalid(format!("failed to read {}: {e}", config_path.display()))
+                    crate::error::BiError::Invalid(format!(
+                        "failed to read {}: {e}",
+                        config_path.display()
+                    ))
                 })?;
                 serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
             } else {
@@ -567,15 +590,17 @@ pub fn install_mcp_config(
                 crate::error::BiError::Invalid(format!("failed to serialize JSON: {e}"))
             })?;
             std::fs::write(&config_path, output).map_err(|e| {
-                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+                crate::error::BiError::Invalid(format!(
+                    "failed to write {}: {e}",
+                    config_path.display()
+                ))
             })?;
         }
         "toml-codex" => {
             // Codex: ~/.codex/config.toml — [mcp_servers.biturbo] table
             // Simple text manipulation: remove existing [mcp_servers.biturbo] block, append new one.
-            let biturbo_block = format!(
-                "[mcp_servers.biturbo]\ncommand = \"{bin_path}\"\nargs = []\n"
-            );
+            let biturbo_block =
+                format!("[mcp_servers.biturbo]\ncommand = \"{bin_path}\"\nargs = []\n");
 
             let content = if existed {
                 std::fs::read_to_string(&config_path).unwrap_or_default()
@@ -591,7 +616,9 @@ pub fn install_mcp_config(
                 if trimmed.starts_with('[') && !trimmed.starts_with("[mcp_servers.biturbo") {
                     skip = false;
                 }
-                if trimmed == "[mcp_servers.biturbo]" || trimmed.starts_with("[mcp_servers.biturbo]") {
+                if trimmed == "[mcp_servers.biturbo]"
+                    || trimmed.starts_with("[mcp_servers.biturbo]")
+                {
                     skip = true;
                     continue;
                 }
@@ -608,7 +635,10 @@ pub fn install_mcp_config(
             new_content.push_str(&biturbo_block);
 
             std::fs::write(&config_path, new_content).map_err(|e| {
-                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+                crate::error::BiError::Invalid(format!(
+                    "failed to write {}: {e}",
+                    config_path.display()
+                ))
             })?;
         }
         _ => unreachable!(),

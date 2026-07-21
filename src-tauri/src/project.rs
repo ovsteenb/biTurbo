@@ -96,9 +96,7 @@ pub fn create(state: &AppState, input: CreateProjectInput) -> BiResult<Project> 
 /// Simple `key=value` lines; the MCP server only reads the `projectName=`
 /// line, so extra fields are safe to add without breaking existing parsers.
 fn biturbo_file_content(id: &str, name: &str, created_at: i64) -> String {
-    format!(
-        "projectId={id}\nprojectName={name}\ncreatedAt={created_at}\nbiturboVersion=1\n"
-    )
+    format!("projectId={id}\nprojectName={name}\ncreatedAt={created_at}\nbiturboVersion=1\n")
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,7 +108,10 @@ pub struct EnsureMarkerFilesResult {
 /// Regenerate `.biTurbo` and/or `.biturboignore` for a project whose root_path
 /// predates these marker files (legacy projects). Idempotent — files that
 /// already exist are left untouched.
-pub fn ensure_marker_files(state: &AppState, project_id: &str) -> BiResult<EnsureMarkerFilesResult> {
+pub fn ensure_marker_files(
+    state: &AppState,
+    project_id: &str,
+) -> BiResult<EnsureMarkerFilesResult> {
     let p = get(state, project_id)?;
     let root_path = p
         .root_path

@@ -22,6 +22,7 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub db: Db,
     pub embedder: Arc<Embedder>,
+    project_embedders: Arc<RwLock<HashMap<String, (String, Arc<Embedder>)>>>,
     pub indices: Arc<RwLock<HashMap<String, Arc<ProjectIndex>>>>,
     pub default_project_id: String,
     pub app: Option<AppHandle>,
@@ -36,6 +37,7 @@ impl Clone for AppState {
             data_dir: self.data_dir.clone(),
             db: self.db.clone(),
             embedder: self.embedder.clone(),
+            project_embedders: self.project_embedders.clone(),
             indices: self.indices.clone(),
             default_project_id: self.default_project_id.clone(),
             app: self.app.clone(),
@@ -68,6 +70,7 @@ impl AppState {
             data_dir: data_dir.to_path_buf(),
             db,
             embedder,
+            project_embedders: Arc::new(RwLock::new(HashMap::new())),
             indices: Arc::new(RwLock::new(HashMap::new())),
             default_project_id: default_id,
             app: None,
@@ -266,7 +269,7 @@ impl AppState {
 
     /// Embed text and add to a project's index. Returns the vector length.
     pub fn embed_and_add(&self, project_id: &str, uid: &str, text: &str) -> BiResult<usize> {
-        let vec = self.embedder.embed(text)?;
+        let vec = self.embedder_for_project(project_id)?.embed(text)?;
         let idx = self.get_or_load_index(project_id)?;
         idx.add(uid, &vec)?;
         Ok(vec.len())
@@ -288,7 +291,7 @@ impl AppState {
         allowlist: Option<&[String]>,
     ) -> BiResult<Vec<crate::index_engine::SearchHit>> {
         self.repair_index_if_needed(project_id)?;
-        let vec = self.embedder.embed(query)?;
+        let vec = self.embedder_for_project(project_id)?.embed(query)?;
         let idx = self.get_or_load_index(project_id)?;
         idx.search(&vec, k, allowlist)
     }
@@ -344,11 +347,10 @@ impl AppState {
         let mut items: Vec<(String, Vec<f32>)> = Vec::with_capacity(rows.len());
         for chunk in rows.chunks(BATCH) {
             let text_refs: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-            let vecs = self.embedder.embed_batch(&text_refs)?;
-            items.extend(chunk
-                .iter()
-                .zip(vecs)
-                .map(|((uid, _), v)| (uid.clone(), v)));
+            let vecs = self
+                .embedder_for_project(project_id)?
+                .embed_batch(&text_refs)?;
+            items.extend(chunk.iter().zip(vecs).map(|((uid, _), v)| (uid.clone(), v)));
         }
         idx.replace_all(&items)?;
         let _ = idx.flush();
@@ -366,5 +368,41 @@ impl AppState {
             Ok(())
         })?;
         Ok(())
+    }
+
+    pub fn embedder_for_project(&self, project_id: &str) -> BiResult<Arc<Embedder>> {
+        let model = {
+            let conn = self.db.conn()?;
+            conn.query_row(
+                "SELECT COALESCE(embed_model, ?2) FROM projects WHERE id = ?1",
+                rusqlite::params![project_id, crate::embed::DEFAULT_MODEL],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|_| BiError::NotFound(format!("project {project_id}")))?
+        };
+        if matches!(model.as_str(), "BGE-small-en" | "BGE-small-en-v1.5") {
+            return Ok(self.embedder.clone());
+        }
+        if let Some((cached_model, embedder)) = self.project_embedders.read().get(project_id) {
+            if cached_model == &model {
+                return Ok(embedder.clone());
+            }
+        }
+        let embedder = Arc::new(Embedder::new(&model)?);
+        self.project_embedders
+            .write()
+            .insert(project_id.to_string(), (model, embedder.clone()));
+        Ok(embedder)
+    }
+
+    pub fn invalidate_project_embedder(&self, project_id: &str) {
+        self.project_embedders.write().remove(project_id);
+    }
+
+    pub fn release_idle_embedders(&self) {
+        self.embedder.release_if_idle();
+        for (_, embedder) in self.project_embedders.read().values() {
+            embedder.release_if_idle();
+        }
     }
 }

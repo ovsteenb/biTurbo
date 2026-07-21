@@ -246,11 +246,15 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         }
         "operation_status" => {
             let id = arg_str(&args, "id")?;
-            text(&serde_json::to_string_pretty(&crate::operations::get(state, &id)?)?)
+            text(&serde_json::to_string_pretty(&crate::operations::get(
+                state, &id,
+            )?)?)
         }
         "list_operations" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-            text(&serde_json::to_string_pretty(&crate::operations::list(state, limit)?)?)
+            text(&serde_json::to_string_pretty(&crate::operations::list(
+                state, limit,
+            )?)?)
         }
         "cancel_operation" => {
             let id = arg_str(&args, "id")?;
@@ -322,12 +326,12 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             crate::io::set_project_embed_model(state, &project_id, model.as_deref())?;
             text("{}")
         }
-        "stats" => {
-            text(&serde_json::to_string_pretty(&crate::application::stats(state)?)?)
-        }
-        "bootstrap" => {
-            text(&serde_json::to_string_pretty(&crate::application::bootstrap(state)?)?)
-        }
+        "stats" => text(&serde_json::to_string_pretty(&crate::application::stats(
+            state,
+        )?)?),
+        "bootstrap" => text(&serde_json::to_string_pretty(
+            &crate::application::bootstrap(state)?,
+        )?),
         "recent_activity" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
             text(&serde_json::to_string_pretty(

@@ -380,7 +380,6 @@ pub fn ingest_project_controlled(
                 pending_edges.push((c.uid.clone(), c.file_uid.clone(), "member_of".into(), 1.0));
             }
         }
-
     }
 
     // ---- SQLite: delete stale chunks for changed/deleted files, insert new
@@ -577,7 +576,7 @@ pub fn ingest_project_controlled(
     }
     state.replay_index_mutations(project_id)?;
 
-    state.embedder.force_release();
+    state.embedder_for_project(project_id)?.force_release();
 
     Ok(result)
 }

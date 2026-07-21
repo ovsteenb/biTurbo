@@ -4,6 +4,7 @@ use crate::error::{BiError, BiResult};
 use crate::state::AppState;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -74,7 +75,10 @@ pub fn list(state: &AppState, limit: usize) -> BiResult<Vec<Operation>> {
                 result, error, cancel_requested, created_at, updated_at, started_at, finished_at
          FROM operations ORDER BY created_at DESC LIMIT ?1",
     )?;
-    let rows = stmt.query_map(rusqlite::params![limit.clamp(1, 500) as i64], row_to_operation)?;
+    let rows = stmt.query_map(
+        rusqlite::params![limit.clamp(1, 500) as i64],
+        row_to_operation,
+    )?;
     Ok(rows.filter_map(Result::ok).collect())
 }
 
@@ -132,15 +136,7 @@ pub fn fail(state: &AppState, id: &str, error: &str) -> BiResult<()> {
 }
 
 pub fn mark_cancelled(state: &AppState, id: &str) -> BiResult<()> {
-    update_status(
-        state,
-        id,
-        "cancelled",
-        Some("cancelled"),
-        None,
-        None,
-        None,
-    )
+    update_status(state, id, "cancelled", Some("cancelled"), None, None, None)
 }
 
 pub fn request_cancel(state: &AppState, id: &str) -> BiResult<Operation> {
@@ -276,32 +272,135 @@ pub fn start_consolidate(state: &AppState, project_id: Option<&str>) -> BiResult
     Ok(operation)
 }
 
+pub fn start_model_rebuild(
+    state: &AppState,
+    project_id: &str,
+    model: Option<&str>,
+) -> BiResult<Operation> {
+    crate::project::get(state, project_id)?;
+    let model_name = model.unwrap_or(crate::embed::DEFAULT_MODEL);
+    // Validate synchronously so a misspelled model never creates a doomed job.
+    crate::embed::Embedder::new(model_name)?;
+    let checkpoint = serde_json::json!({"model": model});
+    let operation = create(state, "model_rebuild", Some(project_id), Some(&checkpoint))?;
+    let state = Arc::new(state.clone());
+    let id = operation.id.clone();
+    let project_id = project_id.to_string();
+    let model = model.map(String::from);
+    std::thread::Builder::new()
+        .name(format!("biturbo-operation-{id}"))
+        .spawn(move || {
+            let _ = execute_model_rebuild(&state, &id, &project_id, model.as_deref());
+        })
+        .ok();
+    Ok(operation)
+}
+
 pub fn resume_pending(state: Arc<AppState>) -> BiResult<usize> {
     recover_interrupted(&state)?;
     let pending = list(&state, 500)?;
     let mut resumed = 0;
-    for operation in pending
-        .into_iter()
-        .filter(|op| {
-            op.status == "queued" && matches!(op.kind.as_str(), "ingest" | "watch_ingest")
-        })
-    {
-        let Some(project_id) = operation.project_id.clone() else {
-            fail(&state, &operation.id, "queued ingest has no project_id")?;
-            continue;
-        };
-        let root = operation
-            .checkpoint
-            .as_ref()
-            .and_then(|v| v.get("root_path"))
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from);
-        let Some(root) = root else {
-            fail(&state, &operation.id, "queued ingest has no root_path checkpoint")?;
-            continue;
-        };
-        spawn_ingest(state.clone(), operation.id, project_id, root);
-        resumed += 1;
+    for operation in pending.into_iter().filter(|op| op.status == "queued") {
+        match operation.kind.as_str() {
+            "ingest" | "watch_ingest" => {
+                let Some(project_id) = operation.project_id.clone() else {
+                    fail(&state, &operation.id, "queued ingest has no project_id")?;
+                    continue;
+                };
+                let root = operation
+                    .checkpoint
+                    .as_ref()
+                    .and_then(|v| v.get("root_path"))
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from);
+                let Some(root) = root else {
+                    fail(
+                        &state,
+                        &operation.id,
+                        "queued ingest has no root_path checkpoint",
+                    )?;
+                    continue;
+                };
+                spawn_ingest(state.clone(), operation.id, project_id, root);
+                resumed += 1;
+            }
+            "multi_ingest" => {
+                let projects = operation
+                    .checkpoint
+                    .as_ref()
+                    .and_then(|value| value.get("projects"))
+                    .and_then(|value| value.as_array())
+                    .map(|projects| {
+                        projects
+                            .iter()
+                            .filter_map(|project| {
+                                Some((
+                                    project.get("project_id")?.as_str()?.to_string(),
+                                    PathBuf::from(project.get("root_path")?.as_str()?),
+                                ))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if projects.is_empty() {
+                    fail(&state, &operation.id, "queued multi-ingest has no projects")?;
+                    continue;
+                }
+                let id = operation.id;
+                let state = state.clone();
+                std::thread::Builder::new()
+                    .name(format!("biturbo-operation-{id}"))
+                    .spawn(move || {
+                        let _ = execute_multi_ingest(&state, &id, projects);
+                    })
+                    .ok();
+                resumed += 1;
+            }
+            "consolidate" => {
+                let id = operation.id;
+                let project_id = operation.project_id;
+                let state = state.clone();
+                std::thread::Builder::new()
+                    .name(format!("biturbo-operation-{id}"))
+                    .spawn(move || {
+                        let _ = execute_consolidate(&state, &id, project_id.as_deref());
+                    })
+                    .ok();
+                resumed += 1;
+            }
+            "model_rebuild" => {
+                let Some(project_id) = operation.project_id else {
+                    fail(
+                        &state,
+                        &operation.id,
+                        "queued model rebuild has no project_id",
+                    )?;
+                    continue;
+                };
+                let model = operation
+                    .checkpoint
+                    .as_ref()
+                    .and_then(|value| value.get("model"))
+                    .and_then(|value| value.as_str())
+                    .map(String::from);
+                let id = operation.id;
+                let state = state.clone();
+                std::thread::Builder::new()
+                    .name(format!("biturbo-operation-{id}"))
+                    .spawn(move || {
+                        let _ = execute_model_rebuild(&state, &id, &project_id, model.as_deref());
+                    })
+                    .ok();
+                resumed += 1;
+            }
+            unsupported => {
+                fail(
+                    &state,
+                    &operation.id,
+                    &format!("unsupported queued operation kind: {unsupported}"),
+                )?;
+            }
+        }
     }
     Ok(resumed)
 }
@@ -381,6 +480,175 @@ fn execute_consolidate(
         }
         Err(error) => {
             fail(state, id, &error.to_string())?;
+            Err(error)
+        }
+    }
+}
+
+fn execute_model_rebuild(
+    state: &AppState,
+    id: &str,
+    project_id: &str,
+    requested_model: Option<&str>,
+) -> BiResult<crate::project::Project> {
+    mark_running(state, id)?;
+    let result = (|| -> BiResult<crate::project::Project> {
+        state.replay_index_mutations(project_id)?;
+        let project = crate::project::get(state, project_id)?;
+        let model_name = requested_model.unwrap_or(crate::embed::DEFAULT_MODEL);
+        let embedder = crate::embed::Embedder::new(model_name)?;
+        let snapshot_mutation: i64 = {
+            let conn = state.db.conn()?;
+            conn.query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM index_mutations WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get(0),
+            )?
+        };
+        let rows: Vec<(String, String)> = {
+            let conn = state.db.conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT uid, content FROM memories
+                 WHERE project_id = ?1 AND superseded_by IS NULL ORDER BY uid",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![project_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.filter_map(Result::ok).collect()
+        };
+        let shadow_dir = state.data_dir.join("indices").join(format!("rebuild-{id}"));
+        std::fs::create_dir_all(&shadow_dir)?;
+        let shadow = crate::index_engine::ProjectIndex::open_or_create(
+            project_id,
+            embedder.dim,
+            project.bit_width as usize,
+            &shadow_dir,
+        )?;
+        let total = rows.len();
+        for (batch_index, chunk) in rows.chunks(32).enumerate() {
+            if is_cancel_requested(state, id)? {
+                std::fs::remove_dir_all(&shadow_dir).ok();
+                mark_cancelled(state, id)?;
+                return Err(BiError::Invalid("operation cancelled".into()));
+            }
+            let texts: Vec<&str> = chunk.iter().map(|(_, content)| content.as_str()).collect();
+            let vectors = embedder.embed_batch_uncached(&texts)?;
+            let items: Vec<(String, Vec<f32>)> = chunk
+                .iter()
+                .zip(vectors)
+                .map(|((uid, _), vector)| (uid.clone(), vector))
+                .collect();
+            shadow.add_batch(&items)?;
+            update_progress(
+                state,
+                id,
+                "re-embedding",
+                ((batch_index + 1) * 32).min(total),
+                total,
+                None,
+            )?;
+        }
+        shadow.flush()?;
+
+        let mutation_now: i64 = {
+            let conn = state.db.conn()?;
+            conn.query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM index_mutations WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get(0),
+            )?
+        };
+        if mutation_now != snapshot_mutation {
+            std::fs::remove_dir_all(&shadow_dir).ok();
+            return Err(BiError::Index(
+                "project changed during model rebuild; retrying is safe".into(),
+            ));
+        }
+
+        update_progress(state, id, "activating", total, total, None)?;
+        let indices = state.data_dir.join("indices");
+        let actual = indices.join(format!("{project_id}.tvim"));
+        let actual_meta = indices.join(format!("{project_id}.uidmap.json"));
+        let shadow_file = shadow_dir.join(format!("{project_id}.tvim"));
+        let shadow_meta = shadow_dir.join(format!("{project_id}.uidmap.json"));
+        let backup = indices.join(format!("{project_id}.tvim.pre-{id}"));
+        let backup_meta = indices.join(format!("{project_id}.uidmap.json.pre-{id}"));
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(indices.join(format!("{project_id}.mutation.lock")))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        state.flush_all_indices();
+        state.indices.write().remove(project_id);
+        if actual.exists() {
+            std::fs::rename(&actual, &backup)?;
+        }
+        if actual_meta.exists() {
+            std::fs::rename(&actual_meta, &backup_meta)?;
+        }
+        let activate = (|| -> BiResult<()> {
+            std::fs::rename(&shadow_file, &actual)?;
+            std::fs::rename(&shadow_meta, &actual_meta)?;
+            let digest = shadow.uid_digest();
+            state.db.write(|tx| {
+                tx.execute(
+                    "UPDATE projects SET embed_model = ?1, dim = ?2, updated_at = ?3 WHERE id = ?4",
+                    rusqlite::params![
+                        requested_model,
+                        embedder.dim as i64,
+                        chrono::Utc::now().timestamp_millis(),
+                        project_id
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO index_state(project_id, last_applied_mutation, content_digest, verified_at)
+                     VALUES(?1, ?2, ?3, ?4)
+                     ON CONFLICT(project_id) DO UPDATE SET
+                        last_applied_mutation = excluded.last_applied_mutation,
+                        content_digest = excluded.content_digest,
+                        verified_at = excluded.verified_at",
+                    rusqlite::params![
+                        project_id,
+                        snapshot_mutation,
+                        digest,
+                        chrono::Utc::now().timestamp_millis()
+                    ],
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })();
+        if let Err(error) = activate {
+            std::fs::remove_file(&actual).ok();
+            std::fs::remove_file(&actual_meta).ok();
+            if backup.exists() {
+                std::fs::rename(&backup, &actual).ok();
+            }
+            if backup_meta.exists() {
+                std::fs::rename(&backup_meta, &actual_meta).ok();
+            }
+            let _ = fs2::FileExt::unlock(&lock);
+            return Err(error);
+        }
+        fs2::FileExt::unlock(&lock)?;
+        std::fs::remove_file(backup).ok();
+        std::fs::remove_file(backup_meta).ok();
+        std::fs::remove_dir_all(shadow_dir).ok();
+        state.invalidate_project_embedder(project_id);
+        state.indices.write().remove(project_id);
+        crate::project::get(state, project_id)
+    })();
+
+    match result {
+        Ok(project) => {
+            complete(state, id, &serde_json::to_value(&project)?)?;
+            Ok(project)
+        }
+        Err(error) => {
+            if get(state, id).is_ok_and(|operation| operation.status != "cancelled") {
+                fail(state, id, &error.to_string())?;
+            }
             Err(error)
         }
     }
@@ -486,16 +754,7 @@ fn update_status(
                  started_at = COALESCE(?6, started_at),
                  finished_at = CASE WHEN ?7 THEN ?5 ELSE finished_at END
              WHERE id = ?8",
-            rusqlite::params![
-                status,
-                phase,
-                result,
-                error,
-                now,
-                started_at,
-                terminal,
-                id
-            ],
+            rusqlite::params![status, phase, result, error, now, started_at, terminal, id],
         )?;
         if changed == 0 {
             return Err(BiError::NotFound(format!("operation {id}")));
@@ -531,10 +790,8 @@ mod tests {
     use crate::state::AppState;
 
     fn state() -> (AppState, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "biturbo-operation-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-operation-test-{}", uuid::Uuid::new_v4()));
         (AppState::open(&dir).unwrap(), dir)
     }
 
@@ -578,17 +835,51 @@ mod tests {
         .unwrap();
         super::request_cancel(&state, &operation.id).unwrap();
 
-        assert!(super::execute_ingest(
-            &state,
-            &operation.id,
-            &state.default_project_id,
-            &root,
-        )
-        .is_err());
+        assert!(
+            super::execute_ingest(&state, &operation.id, &state.default_project_id, &root,)
+                .is_err()
+        );
         let stored = super::get(&state, &operation.id).unwrap();
         assert_eq!(stored.status, "cancelled");
         let project = crate::project::get(&state, &state.default_project_id).unwrap();
         assert_eq!(project.indexed_count, 0);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn model_rebuild_activates_a_complete_shadow_index() {
+        let (state, dir) = state();
+        let project_id = state.default_project_id.clone();
+        let operation = super::create(
+            &state,
+            "model_rebuild",
+            Some(&project_id),
+            Some(&serde_json::json!({"model": "all-MiniLM-L6-v2"})),
+        )
+        .unwrap();
+
+        let project = super::execute_model_rebuild(
+            &state,
+            &operation.id,
+            &project_id,
+            Some("all-MiniLM-L6-v2"),
+        )
+        .unwrap();
+
+        assert_eq!(project.embed_model.as_deref(), Some("all-MiniLM-L6-v2"));
+        assert_eq!(project.dim, 384);
+        assert_eq!(
+            super::get(&state, &operation.id).unwrap().status,
+            "succeeded"
+        );
+        let indices = dir.join("indices");
+        assert!(indices.join(format!("{project_id}.tvim")).exists());
+        assert!(indices.join(format!("{project_id}.uidmap.json")).exists());
+        assert!(!std::fs::read_dir(indices)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().contains(".pre-")));
 
         std::fs::remove_dir_all(dir).ok();
     }

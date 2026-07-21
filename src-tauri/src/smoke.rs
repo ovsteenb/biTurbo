@@ -219,7 +219,10 @@ mod tests {
             .replay_index_mutations(&project_id)
             .expect("replay mutation");
         assert!(idx.contains_uid(&uid));
-        assert_eq!(crate::persistence::pending_count(&state, &project_id).unwrap(), 0);
+        assert_eq!(
+            crate::persistence::pending_count(&state, &project_id).unwrap(),
+            0
+        );
 
         std::fs::remove_dir_all(&data_dir).ok();
     }
@@ -240,7 +243,10 @@ mod tests {
 
         let idx = state.get_or_load_index(&project_id).expect("index");
         idx.remove(&mem.uid).expect("remove canonical vector");
-        let ghost = state.embedder.embed("unrelated ghost entry").expect("embed");
+        let ghost = state
+            .embedder
+            .embed("unrelated ghost entry")
+            .expect("embed");
         idx.add("ghost-uid", &ghost).expect("add ghost");
         assert_eq!(idx.len(), 1, "fault must preserve index count");
 

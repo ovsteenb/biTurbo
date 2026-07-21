@@ -28,11 +28,7 @@ pub fn queue_index_upsert(
     queue(tx, project_id, uid, "upsert", Some(content))
 }
 
-pub fn queue_index_delete(
-    tx: &Transaction<'_>,
-    project_id: &str,
-    uid: &str,
-) -> BiResult<()> {
+pub fn queue_index_delete(tx: &Transaction<'_>, project_id: &str, uid: &str) -> BiResult<()> {
     queue(tx, project_id, uid, "delete", None)
 }
 
@@ -134,7 +130,9 @@ impl AppState {
         const BATCH: usize = 32;
         for chunk in upserts.chunks(BATCH) {
             let texts: Vec<&str> = chunk.iter().map(|(_, content)| content.as_str()).collect();
-            let vectors = self.embedder.embed_batch_uncached(&texts)?;
+            let vectors = self
+                .embedder_for_project(project_id)?
+                .embed_batch_uncached(&texts)?;
             let items: Vec<(String, Vec<f32>)> = chunk
                 .iter()
                 .zip(vectors)

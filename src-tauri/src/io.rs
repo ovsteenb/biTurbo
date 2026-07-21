@@ -158,14 +158,7 @@ pub fn set_project_embed_model(
     project_id: &str,
     model: Option<&str>,
 ) -> BiResult<()> {
-    let now = chrono::Utc::now().timestamp_millis();
-    state.db.write(|tx| {
-        tx.execute(
-            "UPDATE projects SET embed_model = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![model, now, project_id],
-        )?;
-        Ok(())
-    })?;
+    crate::operations::start_model_rebuild(state, project_id, model)?;
     Ok(())
 }
 
@@ -259,22 +252,15 @@ fn spawn_watcher(state: &AppState, project_id: &str, root: &Path) {
                 let job_state_for_task = job_state_for_cb.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(2)).await;
-                    let _ = crate::operations::run_watch_ingest_blocking(
-                        &state_clone,
-                        &pid,
-                        &root,
-                    );
+                    let _ = crate::operations::run_watch_ingest_blocking(&state_clone, &pid, &root);
                     let mut state = job_state_for_task.lock();
                     state.running = false;
                     if state.queued {
                         state.queued = false;
                         state.running = true;
                         drop(state);
-                        let run = crate::operations::run_watch_ingest_blocking(
-                            &state_clone,
-                            &pid,
-                            &root,
-                        );
+                        let run =
+                            crate::operations::run_watch_ingest_blocking(&state_clone, &pid, &root);
                         if let Err(e) = &run {
                             tracing::error!("watcher ingest for '{}' failed: {e}", pid);
                         }

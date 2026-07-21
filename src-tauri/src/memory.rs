@@ -250,12 +250,7 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
             None,
         )?;
         if input.content.is_some() {
-            crate::persistence::queue_index_upsert(
-                tx,
-                &existing.project_id,
-                uid,
-                &new_content,
-            )?;
+            crate::persistence::queue_index_upsert(tx, &existing.project_id, uid, &new_content)?;
         }
         Ok(())
     })?;
@@ -278,8 +273,7 @@ pub fn search(
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    
-    state.embedder.release_if_idle();
+
     let k = k.clamp(1, 100);
     if let Some(mem_type) = mem_type {
         MemType::from_str(mem_type)?;
@@ -289,6 +283,7 @@ pub fn search(
     } else {
         project_id.to_string()
     };
+    state.embedder_for_project(&project_id)?.release_if_idle();
 
     let kk = (k * 3).max(30);
     let conn = state.db.conn()?;
@@ -330,7 +325,10 @@ pub fn search(
 
     let feedback_boosts = crate::recall::feedback_boosts(
         state,
-        &ranked.iter().map(|(uid, _)| uid.clone()).collect::<Vec<_>>(),
+        &ranked
+            .iter()
+            .map(|(uid, _)| uid.clone())
+            .collect::<Vec<_>>(),
     )?;
 
     let n = ranked.len();
@@ -605,16 +603,115 @@ fn tokenize_query(query: &str) -> Vec<String> {
 /// Filter out common stopwords from query terms
 fn filter_stopwords(terms: &[String]) -> Vec<String> {
     const STOPWORDS: &[&str] = &[
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
-        "by", "from", "up", "about", "into", "through", "during", "before", "after", "above",
-        "below", "between", "among", "is", "was", "are", "were", "been", "be", "have", "has",
-        "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must",
-        "shall", "can", "need", "dare", "ought", "used", "how", "what", "when", "where", "why",
-        "which", "who", "whom", "whose", "this", "that", "these", "those", "i", "you", "he",
-        "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his", "its",
-        "our", "their", "myself", "yourself", "himself", "herself", "itself", "ourselves",
-        "themselves", "all", "each", "every", "both", "few", "more", "most", "other", "some",
-        "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "up",
+        "about",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "among",
+        "is",
+        "was",
+        "are",
+        "were",
+        "been",
+        "be",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "ought",
+        "used",
+        "how",
+        "what",
+        "when",
+        "where",
+        "why",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "myself",
+        "yourself",
+        "himself",
+        "herself",
+        "itself",
+        "ourselves",
+        "themselves",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
     ];
 
     terms

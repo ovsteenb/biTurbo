@@ -88,7 +88,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             #[cfg(desktop)]
-            app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             tray::setup(app)?;
 
             let data_dir = app.path().app_data_dir().expect("app data dir resolvable");
