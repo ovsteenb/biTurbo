@@ -84,15 +84,17 @@ pub fn list(state: &AppState, limit: usize) -> BiResult<Vec<Operation>> {
 
 pub fn mark_running(state: &AppState, id: &str) -> BiResult<()> {
     let now = chrono::Utc::now().timestamp_millis();
-    update_status(
-        state,
-        id,
-        "running",
-        Some("starting"),
-        None,
-        None,
-        Some(now),
-    )
+    state.db.write(|tx| {
+        let changed = tx.execute(
+            "UPDATE operations SET status = 'running', phase = 'starting', updated_at = ?1,
+                 started_at = ?1 WHERE id = ?2 AND status = 'queued'",
+            rusqlite::params![now, id],
+        )?;
+        if changed == 0 {
+            return Err(BiError::Invalid(format!("operation {id} is not queued")));
+        }
+        Ok(())
+    })
 }
 
 pub fn update_progress(
@@ -167,15 +169,36 @@ pub fn is_cancel_requested(state: &AppState, id: &str) -> BiResult<bool> {
 }
 
 pub fn recover_interrupted(state: &AppState) -> BiResult<usize> {
-    let now = chrono::Utc::now().timestamp_millis();
-    state.db.write(|tx| {
-        Ok(tx.execute(
-            "UPDATE operations SET status = 'queued', phase = 'recovered',
-                 cancel_requested = 0, updated_at = ?1, started_at = NULL
-             WHERE status = 'running'",
-            rusqlite::params![now],
-        )?)
-    })
+    let running: Vec<String> = {
+        let conn = state.db.conn()?;
+        let mut stmt = conn.prepare("SELECT id FROM operations WHERE status = 'running'")?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+        ids
+    };
+    let mut recovered = 0;
+    for id in running {
+        let lock = open_operation_lock(state, &id)?;
+        if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                continue;
+            }
+            return Err(error.into());
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        recovered += state.db.write(|tx| {
+            Ok(tx.execute(
+                "UPDATE operations SET status = 'queued', phase = 'recovered',
+                     cancel_requested = 0, updated_at = ?1, started_at = NULL
+                 WHERE id = ?2 AND status = 'running'",
+                rusqlite::params![now, id],
+            )?)
+        })?;
+        fs2::FileExt::unlock(&lock)?;
+    }
+    Ok(recovered)
 }
 
 pub fn start_ingest(state: &AppState, project_id: &str, root: &Path) -> BiResult<Operation> {
@@ -486,6 +509,7 @@ fn execute_multi_ingest(
     id: &str,
     projects: Vec<(String, PathBuf)>,
 ) -> BiResult<crate::ingest::MultiIngestResult> {
+    let _operation_lock = lock_operation(state, id)?;
     mark_running(state, id)?;
     let mut combined = crate::ingest::MultiIngestResult::default();
     let total = projects.len();
@@ -536,6 +560,7 @@ fn execute_consolidate(
     id: &str,
     project_id: Option<&str>,
 ) -> BiResult<crate::consolidate::ConsolidateReport> {
+    let _operation_lock = lock_operation(state, id)?;
     mark_running(state, id)?;
     update_progress(state, id, "consolidating", 0, 1, None)?;
     if is_cancel_requested(state, id)? {
@@ -567,6 +592,7 @@ fn execute_model_rebuild(
     project_id: &str,
     requested_model: Option<&str>,
 ) -> BiResult<crate::project::Project> {
+    let _operation_lock = lock_operation(state, id)?;
     mark_running(state, id)?;
     let result = (|| -> BiResult<crate::project::Project> {
         state.replay_index_mutations(project_id)?;
@@ -746,6 +772,7 @@ fn execute_ingest(
     project_id: &str,
     root: &Path,
 ) -> BiResult<crate::ingest::IngestResult> {
+    let _operation_lock = lock_operation(state, id)?;
     mark_running(state, id)?;
     let started = std::time::Instant::now();
     let outcome = crate::ingest::ingest_project_controlled(state, project_id, root, Some(id));
@@ -810,6 +837,23 @@ fn execute_ingest(
             Err(error)
         }
     }
+}
+
+fn open_operation_lock(state: &AppState, id: &str) -> BiResult<std::fs::File> {
+    let directory = state.data_dir.join("operation-locks");
+    std::fs::create_dir_all(&directory)?;
+    Ok(OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join(format!("{id}.lock")))?)
+}
+
+fn lock_operation(state: &AppState, id: &str) -> BiResult<std::fs::File> {
+    let lock = open_operation_lock(state, id)?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    Ok(lock)
 }
 
 fn update_status(
@@ -893,6 +937,19 @@ mod tests {
         let recovered = super::get(&state, &operation.id).unwrap();
         assert_eq!(recovered.status, "queued");
         assert!(!recovered.cancel_requested);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn recovery_does_not_duplicate_a_live_operation() {
+        let (state, dir) = state();
+        let operation = super::create(&state, "consolidate", None, None).unwrap();
+        super::mark_running(&state, &operation.id).unwrap();
+        let _live_lock = super::lock_operation(&state, &operation.id).unwrap();
+
+        assert_eq!(super::recover_interrupted(&state).unwrap(), 0);
+        assert_eq!(super::get(&state, &operation.id).unwrap().status, "running");
 
         std::fs::remove_dir_all(dir).ok();
     }

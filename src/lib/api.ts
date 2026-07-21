@@ -146,6 +146,7 @@ export const api = {
   operationStatus: (id: string) => invoke<Operation>("operation_status", { id }),
   listOperations: (limit = 100) => invoke<Operation[]>("list_operations", { limit }),
   cancelOperation: (id: string) => invoke<Operation>("cancel_operation", { id }),
+  retryOperation: (id: string) => invoke<Operation>("retry_operation", { id }),
 
   getProjectGraph: (project_id: string) =>
     invoke<GraphData>("get_project_graph", {

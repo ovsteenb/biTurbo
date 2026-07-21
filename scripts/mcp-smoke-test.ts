@@ -388,6 +388,14 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "retry_operation (terminal guard)",
+    tool: "retry_operation",
+    args: () => ({ id: OPERATION_HOLDER.id ?? "" }),
+    skip: () => !OPERATION_HOLDER.id,
+    note: "a completed operation should reject retry while still round-tripping a structured error",
+    expect: () => true,
+  },
+  {
     name: "stats",
     tool: "stats",
     expect: (r) => {

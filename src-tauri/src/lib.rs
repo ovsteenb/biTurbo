@@ -131,6 +131,7 @@ pub fn run() {
             commands::operation_status,
             commands::list_operations,
             commands::cancel_operation,
+            commands::retry_operation,
             commands::get_project_graph,
             commands::list_tags,
             commands::consolidate_now,

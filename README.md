@@ -13,7 +13,7 @@ Persistent · project-scoped · semantic · MCP-native.
 [![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)
 [![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-D4A574.svg)](https://www.rust-lang.org)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
-[![MCP](https://img.shields.io/badge/MCP-26%20tools-C7A0E0.svg)](#mcp-tools)
+[![MCP](https://img.shields.io/badge/MCP-27%20tools-C7A0E0.svg)](#mcp-tools)
 [![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
 [![npm 10+](https://img.shields.io/badge/npm-10%2B-CB3837.svg)](https://npmjs.com)
 
@@ -26,7 +26,7 @@ Persistent · project-scoped · semantic · MCP-native.
 Every AI coding session starts blank. biTurbo gives your agents **persistent, project-scoped, semantic memory** that lives on your disk. No cloud, no SaaS, no embedding leakage.
 
 - **One binary.** Pure Rust, cold start < 50ms, no Python env, no Docker.
-- **MCP-native.** 26 tools. Plugs into Mavis, Claude Code, Cursor, Cline, anything that speaks MCP.
+- **MCP-native.** 27 tools. Plugs into Mavis, Claude Code, Cursor, Cline, anything that speaks MCP.
 - **Per-project isolation.** testy memories never pollute scout-qa.
 - **Maximum compression.** [turbovec 4-bit](https://github.com/RyanCodrai/turbovec) = 16× smaller than float32. A million memories fit in laptop RAM.
 - **Tree-sitter code indexing.** Drop a folder, get semantic code search. *"Where is auth handled?"*
@@ -118,11 +118,11 @@ For code signing, set the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE
 target/debug/biturbo-mcp < /dev/null
 ```
 
-Smoke-test all 26 tools against a real binary:
+Smoke-test all 27 tools against a real binary:
 
 ```bash
 pnpm mcp:test
-# → 19 pass · 0 fail · 0 skip
+# → 27 pass · 0 fail · 0 skip
 ```
 
 ---
@@ -183,7 +183,7 @@ The first time an agent connects, it should:
 
 Full ruleset, anti-patterns, and tool reference: see [INSTRUCTIONS.md](./INSTRUCTIONS.md).
 
-### MCP tools (26)
+### MCP tools (27)
 
 These are the stable tools exposed to agents. The internal dispatcher may contain additional development-only helpers that are not part of the public MCP surface.
 
@@ -192,7 +192,7 @@ These are the stable tools exposed to agents. The internal dispatcher may contai
 | `remember` | `forget` | `update` | `get_memory` |
 | `search` | `list` | `list_tags` | `recall_for_context` |
 | `recall_explain` | `submit_recall_feedback` | `start_ingest` | `operation_status` |
-| `list_operations` | `cancel_operation` |  |  |
+| `list_operations` | `cancel_operation` | `retry_operation` |  |
 | `list_projects` | `get_project` | `create_project` | `delete_project` |
 | `ingest_project` | `consolidate` | `consolidate_status` | `get_project_name_from_file` |
 | `stats` | `bootstrap` | `recent_activity` | `register_agent` |
@@ -246,7 +246,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 
 - [x] Per-project turbovec IdMapIndex with hybrid allowlist filters
 - [x] Tree-sitter indexed code (22 languages, including SQL, Dart, Lua, Scala, R, and PowerShell)
-- [x] MCP stdio server with 26 tools
+- [x] MCP stdio server with 27 tools
 - [x] Web-viewer + graph view (canvas, Barnes–Hut in worker)
 - [x] Dark + light theme, persistent
 - [x] Confirmation modal + context menu primitives
@@ -290,7 +290,7 @@ biTurbo/
 │   │   ├── project.rs            multi-project isolation
 │   │   ├── ingest.rs             tree-sitter project walker
 │   │   ├── consolidate.rs        decay / dedup / merge
-│   │   ├── mcp.rs                stdio MCP server (26 tools)
+│   │   ├── mcp.rs                stdio MCP server (27 tools)
 │   │   ├── scheduler.rs          background consolidate scheduler
 │   │   └── commands.rs           Tauri IPC handlers
 │   └── bin/biturbo_mcp.rs        Standalone MCP server binary

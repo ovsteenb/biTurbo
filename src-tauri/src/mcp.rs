@@ -107,7 +107,7 @@ const MCP_INSTRUCTIONS: &str = r#"## biTurbo Memory Layer
 
 Use `register_agent` and `list_projects` at session start. Before non-trivial work, call `recall_for_context` with the active project. Store only durable facts, decisions, preferences, patterns, episodes, reflections, or indexed code; never store secrets or transient state. Always pass `project_id` to preserve isolation.
 
-The 26-tool public surface includes compatible memory/project APIs plus explainable recall (`recall_explain`, `submit_recall_feedback`) and supervised operations (`start_ingest`, `operation_status`, `list_operations`, `cancel_operation`). Legacy `ingest_project` and `consolidate` remain synchronous."#;
+The 27-tool public surface includes compatible memory/project APIs plus explainable recall (`recall_explain`, `submit_recall_feedback`) and supervised operations (`start_ingest`, `operation_status`, `list_operations`, `cancel_operation`, `retry_operation`). Legacy `ingest_project` and `consolidate` remain synchronous."#;
 
 async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<Vec<Value>> {
     let text = |v: &str| vec![json!({ "type": "text", "text": v })];
@@ -272,6 +272,12 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             text(&serde_json::to_string_pretty(
                 &crate::operations::request_cancel(state, &id)?,
             )?)
+        }
+        "retry_operation" => {
+            let id = arg_str(&args, "id")?;
+            text(&serde_json::to_string_pretty(&crate::operations::retry(
+                state, &id,
+            )?)?)
         }
         "get_project_graph" => {
             let project_id = arg_str(&args, "project_id")?;
@@ -555,6 +561,7 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"operation_status","description":"Get one persisted operation by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"list_operations","description":"List recent supervised operations.","inputSchema":{"type":"object","properties":{"limit":{"type":"number"}}}},
 {"name":"cancel_operation","description":"Request operation cancellation at its next safe checkpoint.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
+{"name":"retry_operation","description":"Retry a failed or cancelled operation from its persisted input checkpoint.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"consolidate","description":"Run memory maintenance: decay, dedup (cosine >= 0.95), merge.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
 {"name":"consolidate_status","description":"Status of the background consolidate scheduler (running/idle, last run, next run).","inputSchema":{"type":"object","properties":{}}},
 {"name":"stats","description":"Global stats.","inputSchema":{"type":"object","properties":{}}},

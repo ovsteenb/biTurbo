@@ -286,6 +286,14 @@ pub fn cancel_operation(
 }
 
 #[tauri::command]
+pub fn retry_operation(
+    state: State<'_, AppState>,
+    id: String,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::retry(state.inner(), &id)
+}
+
+#[tauri::command]
 pub fn consolidate_status(
     _state: State<'_, AppState>,
 ) -> BiResult<crate::scheduler::ConsolidateStatus> {

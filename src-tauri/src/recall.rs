@@ -149,7 +149,11 @@ pub(crate) fn fuse_rankings(
         *fused.entry(uid.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0);
     }
     let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     ranked
 }
 
@@ -345,5 +349,18 @@ mod tests {
         let neutral = feedback_boosts(&state, std::slice::from_ref(&memory.uid)).unwrap();
         assert_eq!(neutral[&memory.uid], 0.0);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn fusion_breaks_equal_scores_by_uid() {
+        let vector = vec![crate::index_engine::SearchHit {
+            uid: "z-memory".into(),
+            score: 1.0,
+            ext_id: 1,
+        }];
+        let fts = vec![("a-memory".to_string(), 1.0)];
+        let ranked = fuse_rankings(&vector, &fts);
+        assert_eq!(ranked[0].0, "a-memory");
+        assert_eq!(ranked[1].0, "z-memory");
     }
 }

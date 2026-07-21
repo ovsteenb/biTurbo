@@ -6,6 +6,7 @@ use crate::error::{BiError, BiResult};
 use crate::state::AppState;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -149,6 +150,18 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
         return Err(BiError::Invalid("cannot delete default project".into()));
     }
     get(state, id)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(
+            state
+                .data_dir
+                .join("indices")
+                .join(format!("{id}.mutation.lock")),
+        )?;
+    fs2::FileExt::lock_exclusive(&lock)?;
     state.flush_all_indices();
     state.indices.write().remove(id);
     // Remove derived state first. If the process stops here, SQLite still
@@ -171,6 +184,7 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
         log_activity(tx, Some(id), None, "delete_project", None, None)?;
         Ok(())
     });
+    fs2::FileExt::unlock(&lock)?;
     if deleted.is_err() {
         let _ = state.repair_index_if_needed(id);
     }

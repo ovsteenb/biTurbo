@@ -40,7 +40,7 @@ When in doubt, recall. It is cheap. It is correct.
 
 ---
 
-## 3. Tool surface (26 tools, all via MCP)
+## 3. Tool surface (27 tools, all via MCP)
 
 ### Memories
 
@@ -80,6 +80,7 @@ When in doubt, recall. It is cheap. It is correct.
 | `operation_status` | Poll one persisted operation by id. |
 | `list_operations` | List recent operations. Operation metadata is global; memory results remain project-scoped. |
 | `cancel_operation` | Request cancellation at the next safe batch boundary. |
+| `retry_operation` | Retry a failed or cancelled operation from its persisted input checkpoint. |
 
 ### Maintenance
 
@@ -88,7 +89,7 @@ When in doubt, recall. It is cheap. It is correct.
 | `consolidate` | Apply exponential decay, find near-duplicates (cosine ≥ 0.95), merge them. Run on demand or schedule. Cheap on small corpora. |
 | `consolidate_status` | Inspect the background consolidation scheduler. |
 | `stats` | Global memory/project counts. |
-| `bootstrap` | Fetch stats, projects, recent memories, tags, agents, and consolidation status in one call. |
+| `bootstrap` | Fetch stats, projects, recent activity, tags, agents, and consolidation status in one call. |
 | `recent_activity` | Audit log of recent writes/reads/ingests. |
 | `register_agent` | **Call once per session** to attribute your writes. |
 | `get_project_name_from_file` | Resolve `projectName` from a project root's `.biTurbo` file. |
