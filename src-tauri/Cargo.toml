@@ -39,10 +39,11 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 
 # Storage
-rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "backup"] }
 parking_lot = "0.12"
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
+fs2 = "0.4"
 
 # Vector index
 turbovec = "0.8"

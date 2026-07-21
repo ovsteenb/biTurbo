@@ -16,7 +16,6 @@ use tracing;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 const CHUNK_INSERT_BATCH: usize = 64;
-const INDEX_BATCH: usize = 64;
 const PROGRESS_EVERY: usize = 16;
 const MAX_CHUNK_TEXT: usize = 4000;
 /// Group at most this many chunks into one INSERT statement to stay
@@ -271,7 +270,6 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
             .collect()
     });
 
-    let idx = state.get_or_load_index(project_id)?;
     let mut current_rels: HashSet<String> = HashSet::new();
     let mut file_uids: BTreeMap<String, String> = BTreeMap::new();
     let mut pending_chunks: Vec<&PendingChunk> = Vec::new();
@@ -354,40 +352,10 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
 
     pending_chunks.extend(changed_pfs.iter().flat_map(|pf| pf.chunks.iter()));
 
-    for uid in &stale_uids {
-        let _ = idx.remove(uid);
-    }
-
-    // ---- STREAMED: embed changed chunks in small ONNX batches and write the
-    // vector index in small batches so peak RAM stays bounded.
+    // Vector changes are journaled in the SQLite transaction below and replayed
+    // only after that source-of-truth commit succeeds.
     let total_chunks = pending_chunks.len();
-    let mut embedded_so_far = 0;
-
     for wave in pending_chunks.chunks(CHUNK_INSERT_BATCH) {
-        let embed_texts: Vec<String> = wave.iter().map(|c| c.embed_text()).collect();
-        let embed_refs: Vec<&str> = embed_texts.iter().map(String::as_str).collect();
-        let mut wave_offset = 0usize;
-        let mut index_items: Vec<(String, Vec<f32>)> = Vec::with_capacity(INDEX_BATCH);
-
-        state
-            .embedder
-            .embed_batch_uncached_stream(&embed_refs, |chunk_texts, embeddings| {
-                for (i, emb) in embeddings.into_iter().enumerate() {
-                    let c = &wave[wave_offset + i];
-                    index_items.push((c.uid.clone(), emb));
-                    if index_items.len() >= INDEX_BATCH {
-                        idx.add_batch(&index_items)?;
-                        index_items.clear();
-                    }
-                }
-                wave_offset += chunk_texts.len();
-                Ok(())
-            })?;
-
-        if !index_items.is_empty() {
-            idx.add_batch(&index_items)?;
-        }
-
         for c in wave {
             let key = format!("{}\0{}\0member_of", c.uid, c.file_uid);
             if edge_keys.insert(key) {
@@ -395,18 +363,7 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
             }
         }
 
-        embedded_so_far += wave.len();
-        emit_progress(
-            state,
-            project_id,
-            "embedding",
-            embedded_so_far,
-            total_chunks,
-            None,
-            embedded_so_far,
-        );
     }
-    let _ = idx.flush();
 
     // ---- SQLite: delete stale chunks for changed/deleted files, insert new
     // chunks, rebuild changed file edges, and update indexed_files metadata.
@@ -478,6 +435,9 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
 
     state.db.write(|tx| {
         let now = chrono::Utc::now().timestamp_millis();
+        for uid in &stale_uids {
+            crate::persistence::queue_index_delete(tx, project_id, uid)?;
+        }
         db::delete_memories_by_uids(tx, &stale_uids)?;
         db::delete_code_edges_for_files(tx, project_id, &changed_file_uids)?;
         db::delete_code_edges_for_files(tx, project_id, &stale_file_uids)?;
@@ -576,6 +536,17 @@ pub fn ingest_project(state: &AppState, project_id: &str, root: &Path) -> BiResu
         )?;
         Ok(())
     })?;
+
+    emit_progress(
+        state,
+        project_id,
+        "embedding",
+        total_chunks,
+        total_chunks,
+        None,
+        total_chunks,
+    );
+    state.replay_index_mutations(project_id)?;
 
     state.embedder.force_release();
 
@@ -791,6 +762,11 @@ fn flush_chunk_insert(
         }
     }
     stmt.execute(rusqlite::params_from_iter(params))?;
+    for pf in batch {
+        for c in &pf.chunks {
+            crate::persistence::queue_index_upsert(tx, project_id, &c.uid, &c.embed_text())?;
+        }
+    }
     Ok(())
 }
 

@@ -147,11 +147,6 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
     if id == state.default_project_id {
         return Err(BiError::Invalid("cannot delete default project".into()));
     }
-    // Drop index file.
-    let file = state.data_dir.join("indices").join(format!("{id}.tvim"));
-    let _ = std::fs::remove_file(&file);
-    let meta = file.with_extension("uidmap.json");
-    let _ = std::fs::remove_file(&meta);
     state.db.write(|tx| {
         tx.execute(
             "DELETE FROM memories WHERE project_id = ?1",
@@ -162,6 +157,12 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
         Ok(())
     })?;
     state.indices.write().remove(id);
+    // SQLite is the source of truth. Remove derived index files only after the
+    // project deletion has committed successfully.
+    let file = state.data_dir.join("indices").join(format!("{id}.tvim"));
+    let _ = std::fs::remove_file(&file);
+    let meta = file.with_extension("uidmap.json");
+    let _ = std::fs::remove_file(&meta);
     Ok(())
 }
 

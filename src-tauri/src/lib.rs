@@ -29,6 +29,7 @@ pub mod ingest;
 pub mod io;
 pub mod mcp;
 pub mod memory;
+pub mod persistence;
 pub mod project;
 pub mod scheduler;
 pub mod smoke;

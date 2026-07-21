@@ -78,6 +78,7 @@ impl AppState {
 
         // Ensure index files exist on disk, but do NOT load them into memory.
         state.refresh_indices()?;
+        state.replay_all_index_mutations()?;
 
         // Debounced index flusher + LRU evictor. A plain thread (not tokio)
         // so it runs in every consumer of AppState.
@@ -293,20 +294,33 @@ impl AppState {
 
     /// Backfill the vector index when SQLite has more active memories than the on-disk index.
     pub fn repair_index_if_needed(&self, project_id: &str) -> BiResult<()> {
+        self.replay_index_mutations(project_id)?;
         let idx = self.get_or_load_index(project_id)?;
 
-        // Hot path: most searches should not scan every memory row. Count first,
-        // and only walk rows when SQLite has more active memories than the loaded index.
-        let active_count: usize = {
+        // The journal stores the expected uid-set digest after every applied
+        // mutation. This detects equal-sized stale indexes, unlike count alone.
+        let (active_count, expected_digest): (usize, Option<String>) = {
             let conn = self.db.conn()?;
-            conn.query_row(
+            let count = conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
                 rusqlite::params![project_id],
                 |r| r.get::<_, i64>(0),
-            )? as usize
+            )? as usize;
+            let digest = conn
+                .query_row(
+                    "SELECT content_digest FROM index_state WHERE project_id = ?1",
+                    rusqlite::params![project_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None);
+            (count, digest)
         };
 
-        if idx.len() >= active_count {
+        if idx.len() == active_count
+            && expected_digest
+                .as_deref()
+                .is_some_and(|expected| expected == idx.uid_digest())
+        {
             return Ok(());
         }
 
@@ -318,32 +332,38 @@ impl AppState {
             let rows = stmt.query_map(rusqlite::params![project_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?;
-            rows.filter_map(|r| r.ok())
-                .filter(|(uid, _)| !idx.contains_uid(uid))
-                .collect()
+            rows.filter_map(|r| r.ok()).collect()
         };
-
-        if rows.is_empty() {
-            return Ok(());
-        }
         tracing::info!(
-            "repairing vector index for '{}': backfilling {} of {} memories",
+            "rebuilding stale vector index for '{}': {} active memories",
             project_id,
-            rows.len(),
-            idx.len() + rows.len()
+            rows.len()
         );
         const BATCH: usize = 32;
+        let mut items: Vec<(String, Vec<f32>)> = Vec::with_capacity(rows.len());
         for chunk in rows.chunks(BATCH) {
             let text_refs: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
             let vecs = self.embedder.embed_batch(&text_refs)?;
-            let items: Vec<(String, Vec<f32>)> = chunk
+            items.extend(chunk
                 .iter()
                 .zip(vecs)
-                .map(|((uid, _), v)| (uid.clone(), v))
-                .collect();
-            idx.add_batch(&items)?;
+                .map(|((uid, _), v)| (uid.clone(), v)));
         }
+        idx.replace_all(&items)?;
         let _ = idx.flush();
+        let digest = idx.uid_digest();
+        let now = chrono::Utc::now().timestamp_millis();
+        self.db.write(|tx| {
+            tx.execute(
+                "INSERT INTO index_state(project_id, last_applied_mutation, content_digest, verified_at)
+                 VALUES(?1, COALESCE((SELECT MAX(id) FROM index_mutations WHERE project_id = ?1), 0), ?2, ?3)
+                 ON CONFLICT(project_id) DO UPDATE SET content_digest = excluded.content_digest,
+                    last_applied_mutation = excluded.last_applied_mutation,
+                    verified_at = excluded.verified_at",
+                rusqlite::params![project_id, digest, now],
+            )?;
+            Ok(())
+        })?;
         Ok(())
     }
 }

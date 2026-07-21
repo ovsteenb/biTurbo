@@ -169,11 +169,11 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             Some(&uid),
             Some(&serde_json::json!({"mem_type": mem_type})),
         )?;
+        crate::persistence::queue_index_upsert(tx, &project_id, &uid, &input.content)?;
         Ok(())
     })?;
 
-    // Marks the index dirty; the background flusher in AppState persists it.
-    state.embed_and_add(&project_id, &uid, &input.content)?;
+    state.replay_index_mutations(&project_id)?;
 
     get(state, &uid)?.ok_or_else(|| BiError::Internal("memory not found post-insert".into()))
 }
@@ -195,9 +195,6 @@ pub fn get(state: &AppState, uid: &str) -> BiResult<Option<Memory>> {
 
 pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
     let mem = get(state, uid)?.ok_or_else(|| BiError::NotFound(uid.into()))?;
-    if let Ok(idx) = state.get_or_load_index(&mem.project_id) {
-        let _ = idx.remove(uid);
-    }
     let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
         tx.execute(
@@ -210,8 +207,10 @@ pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
             rusqlite::params![now, mem.project_id],
         )?;
         log_activity(tx, Some(&mem.project_id), None, "forget", Some(uid), None)?;
+        crate::persistence::queue_index_delete(tx, &mem.project_id, uid)?;
         Ok(())
     })?;
+    state.replay_index_mutations(&mem.project_id)?;
     Ok(true)
 }
 
@@ -250,11 +249,19 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
             Some(uid),
             None,
         )?;
+        if input.content.is_some() {
+            crate::persistence::queue_index_upsert(
+                tx,
+                &existing.project_id,
+                uid,
+                &new_content,
+            )?;
+        }
         Ok(())
     })?;
 
     if input.content.is_some() {
-        state.embed_and_add(&existing.project_id, uid, &new_content)?;
+        state.replay_index_mutations(&existing.project_id)?;
     }
 
     get(state, uid)?.ok_or_else(|| BiError::Internal("memory vanished after update".into()))

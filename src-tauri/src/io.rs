@@ -81,12 +81,7 @@ pub fn import_folder(state: &AppState, project_id: &str, root: &Path) -> BiResul
         result.files_imported += 1;
     }
 
-    let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
-        tx.execute(
-            "UPDATE projects SET memory_count = memory_count + ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![result.memories_created as i64, now, project_id],
-        )?;
         log_activity(
             tx,
             Some(project_id),
@@ -207,6 +202,14 @@ pub fn enable_watch(state: &AppState, project_id: &str, root: &Path) -> BiResult
 }
 
 pub fn disable_watch(_state: &AppState, project_id: &str) -> BiResult<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    _state.db.write(|tx| {
+        tx.execute(
+            "UPDATE projects SET watch_enabled = 0, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, project_id],
+        )?;
+        Ok(())
+    })?;
     WATCHERS.write().remove(project_id);
     Ok(())
 }
@@ -304,5 +307,48 @@ pub fn resume_watches(state: &AppState) {
         if !WATCHERS.read().contains_key(&id) {
             spawn_watcher(state, &id, Path::new(&root));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project;
+
+    fn temp_data_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("biturbo-io-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn importing_folder_counts_each_memory_once() {
+        let data_dir = temp_data_dir();
+        let root = data_dir.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("one.md"), "# Durable note\nOnly one chunk.").unwrap();
+        let state = AppState::open(&data_dir).unwrap();
+
+        let imported = import_folder(&state, &state.default_project_id, &root).unwrap();
+        let p = project::get(&state, &state.default_project_id).unwrap();
+        assert_eq!(p.memory_count as usize, imported.memories_created);
+
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn disabling_watch_persists_across_state_reopen() {
+        let data_dir = temp_data_dir();
+        let root = data_dir.join("watched");
+        std::fs::create_dir_all(&root).unwrap();
+        let state = AppState::open(&data_dir).unwrap();
+        let project_id = state.default_project_id.clone();
+
+        enable_watch(&state, &project_id, &root).unwrap();
+        assert!(project::get(&state, &project_id).unwrap().watch_enabled);
+        disable_watch(&state, &project_id).unwrap();
+        assert!(!project::get(&state, &project_id).unwrap().watch_enabled);
+
+        let reopened = AppState::open(&data_dir).unwrap();
+        assert!(!project::get(&reopened, &project_id).unwrap().watch_enabled);
+        std::fs::remove_dir_all(data_dir).ok();
     }
 }
