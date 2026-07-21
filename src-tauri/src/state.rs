@@ -17,12 +17,13 @@ use tauri::AppHandle;
 /// turbovec keeps the full quantized index in RAM, so this directly
 /// caps RSS. 512 MiB is enough for several large projects.
 const DEFAULT_INDEX_BUDGET: u64 = 512 * 1024 * 1024;
+type ProjectEmbedderCache = HashMap<String, (String, Arc<Embedder>)>;
 
 pub struct AppState {
     pub data_dir: PathBuf,
     pub db: Db,
     pub embedder: Arc<Embedder>,
-    project_embedders: Arc<RwLock<HashMap<String, (String, Arc<Embedder>)>>>,
+    project_embedders: Arc<RwLock<ProjectEmbedderCache>>,
     pub indices: Arc<RwLock<HashMap<String, Arc<ProjectIndex>>>>,
     pub default_project_id: String,
     pub app: Option<AppHandle>,

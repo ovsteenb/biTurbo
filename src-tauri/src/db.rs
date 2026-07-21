@@ -53,6 +53,7 @@ fn prepare_database(db_path: &Path) -> BiResult<()> {
     let lock_path = parent.join("biturbo.migrate.lock");
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(lock_path)?;
@@ -359,6 +360,7 @@ impl Db {
         let _g = self.write_lock.lock();
         let process_lock = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(self.process_lock_path.as_ref())?;
@@ -581,5 +583,35 @@ mod migration_tests {
         }));
 
         std::fs::remove_dir_all(db_path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_every_schema_change() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE legacy_marker(value TEXT NOT NULL);
+             CREATE TABLE operations(id INTEGER);
+             INSERT INTO legacy_marker(value) VALUES('untouched');
+             PRAGMA user_version = 0;",
+        )
+        .unwrap();
+
+        assert!(run_migrations(&mut conn).is_err());
+        let marker: String = conn
+            .query_row("SELECT value FROM legacy_marker", [], |row| row.get(0))
+            .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let projects: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, "untouched");
+        assert_eq!(version, 0);
+        assert_eq!(projects, 0);
     }
 }

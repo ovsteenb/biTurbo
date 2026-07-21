@@ -575,6 +575,7 @@ fn execute_model_rebuild(
         let backup_meta = indices.join(format!("{project_id}.uidmap.json.pre-{id}"));
         let lock = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(indices.join(format!("{project_id}.mutation.lock")))?;

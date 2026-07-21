@@ -298,6 +298,13 @@ pub fn search(
         None
     };
 
+    // turbovec expects a non-empty allowlist. More importantly, an empty
+    // typed candidate set is already a definitive empty result and should not
+    // load an embedding model or enter vector search at all.
+    if allowlist_uids.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(Vec::new());
+    }
+
     let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist_uids.as_deref())?;
     let fts_uids = fts_search(&conn, query, &project_id, mem_type, kk)?;
 
@@ -835,5 +842,27 @@ mod search_tests {
         assert!(q.contains("\"auth\"*"));
         assert!(q.contains("\"login-flow\"*"));
         assert!(!q.contains("!"));
+    }
+
+    #[test]
+    fn empty_type_filter_returns_without_vector_search() {
+        let dir = std::env::temp_dir().join(format!(
+            "biturbo-empty-filter-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let state = AppState::open(&dir).unwrap();
+
+        let hits = search(
+            &state,
+            &state.default_project_id,
+            "semaphore violet",
+            3,
+            Some("episode"),
+        )
+        .unwrap();
+
+        assert!(hits.is_empty());
+        assert_eq!(state.embedder.cache_len(), 0);
+        std::fs::remove_dir_all(dir).ok();
     }
 }
