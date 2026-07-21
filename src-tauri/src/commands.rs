@@ -206,6 +206,18 @@ pub fn ingest_project(state: State<'_, AppState>, args: IngestArgs) -> BiResult<
 }
 
 #[tauri::command]
+pub fn start_ingest(
+    state: State<'_, AppState>,
+    args: IngestArgs,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::start_ingest(
+        state.inner(),
+        &args.project_id,
+        std::path::Path::new(&args.root_path),
+    )
+}
+
+#[tauri::command]
 pub fn ingest_multiple_projects(
     state: State<'_, AppState>,
     args: MultiIngestArgs,

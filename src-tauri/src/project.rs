@@ -148,7 +148,21 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
     if id == state.default_project_id {
         return Err(BiError::Invalid("cannot delete default project".into()));
     }
-    state.db.write(|tx| {
+    get(state, id)?;
+    state.flush_all_indices();
+    state.indices.write().remove(id);
+    // Remove derived state first. If the process stops here, SQLite still
+    // contains the project and startup repair deterministically rebuilds it.
+    let file = state.data_dir.join("indices").join(format!("{id}.tvim"));
+    let meta = file.with_extension("uidmap.json");
+    for path in [&file, &meta] {
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|error| {
+                BiError::Io(format!("remove project index {}: {error}", path.display()))
+            })?;
+        }
+    }
+    let deleted = state.db.write(|tx| {
         tx.execute(
             "DELETE FROM memories WHERE project_id = ?1",
             rusqlite::params![id],
@@ -156,15 +170,11 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
         tx.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         log_activity(tx, Some(id), None, "delete_project", None, None)?;
         Ok(())
-    })?;
-    state.indices.write().remove(id);
-    // SQLite is the source of truth. Remove derived index files only after the
-    // project deletion has committed successfully.
-    let file = state.data_dir.join("indices").join(format!("{id}.tvim"));
-    let _ = std::fs::remove_file(&file);
-    let meta = file.with_extension("uidmap.json");
-    let _ = std::fs::remove_file(&meta);
-    Ok(())
+    });
+    if deleted.is_err() {
+        let _ = state.repair_index_if_needed(id);
+    }
+    deleted
 }
 
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {

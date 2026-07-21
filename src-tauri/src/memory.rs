@@ -117,16 +117,17 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
     let tags_json = serde_json::to_string(&input.tags.clone().unwrap_or_default())?;
 
     state.db.write(|tx| {
-        let supersedes_id: Option<i64> = match input.supersedes.as_deref() {
+        let superseded: Option<(i64, String)> = match input.supersedes.as_deref() {
             Some(old_uid) => tx
                 .query_row(
-                    "SELECT id FROM memories WHERE uid = ?1 AND project_id = ?2 AND superseded_by IS NULL",
+                    "SELECT id, uid FROM memories WHERE uid = ?1 AND project_id = ?2 AND superseded_by IS NULL",
                     rusqlite::params![old_uid, project_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?,
             None => None,
         };
+        let supersedes_id = superseded.as_ref().map(|(id, _)| *id);
         tx.execute(
             "INSERT INTO memories(uid, project_id, mem_type, content, tags, source_agent,
                                   importance, created_at, updated_at, last_access,
@@ -149,13 +150,14 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             ],
         )?;
         let new_id = tx.last_insert_rowid();
-        if let Some(old_id) = supersedes_id {
+        if let Some((old_id, old_uid)) = superseded {
             tx.execute(
                 "UPDATE memories
                  SET superseded_by = ?1, updated_at = ?2
                  WHERE id = ?3 AND superseded_by IS NULL",
                 rusqlite::params![new_id, now, old_id],
             )?;
+            crate::persistence::queue_index_delete(tx, &project_id, &old_uid)?;
         }
         tx.execute(
             "UPDATE projects SET memory_count = memory_count + 1, updated_at = ?1 WHERE id = ?2",
@@ -308,21 +310,7 @@ pub fn search(
     let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist_uids.as_deref())?;
     let fts_uids = fts_search(&conn, query, &project_id, mem_type, kk)?;
 
-    let mut fused: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
-    const RRF_K: f32 = 60.0;
-    for (rank, h) in vec_hits.iter().enumerate() {
-        let rank_score = 1.0 / (RRF_K + rank as f32 + 1.0);
-        let sim = h.score.clamp(0.0, 1.0);
-        let score = rank_score * (0.5 + 0.5 * sim);
-        *fused.entry(h.uid.clone()).or_insert(0.0) += score;
-    }
-    for (rank, (uid, _bm25)) in fts_uids.iter().enumerate() {
-        let score = 1.0 / (RRF_K + rank as f32 + 1.0);
-        *fused.entry(uid.clone()).or_insert(0.0) += score;
-    }
-
-    let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut ranked = crate::recall::fuse_rankings(&vec_hits, &fts_uids);
     // Keep more candidates for reranking (k*4 gives reranker more to work with).
     ranked.truncate(k.saturating_mul(4).max(k));
 
@@ -399,11 +387,11 @@ pub fn search(
     let query_terms = tokenize_query(query);
     let mut reranked: Vec<MemoryWithScore> = ranked
         .into_iter()
-        .enumerate()
-        .filter_map(|(rank, (uid, base_score))| {
+        .filter_map(|(uid, base_score)| {
             by_uid.remove(&uid).map(|memory| {
-                let reranked_score = rerank_memory_score(base_score, &memory, &query_terms, rank)
-                    + feedback_boosts.get(&uid).copied().unwrap_or(0.0);
+                let reranked_score =
+                    crate::recall::apply_ranking_boost(base_score, &memory, &query_terms)
+                        + feedback_boosts.get(&uid).copied().unwrap_or(0.0);
                 MemoryWithScore {
                     memory,
                     score: reranked_score,
@@ -608,7 +596,7 @@ fn tokenize_query(query: &str) -> Vec<String> {
 }
 
 /// Filter out common stopwords from query terms
-fn filter_stopwords(terms: &[String]) -> Vec<String> {
+pub(crate) fn filter_stopwords(terms: &[String]) -> Vec<String> {
     const STOPWORDS: &[&str] = &[
         "the",
         "a",
@@ -728,69 +716,6 @@ fn filter_stopwords(terms: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Second-stage reranker: boost score based on term matches in content, tags, path, and language.
-/// Uses multiplicative boosts to refine rather than override the base RRF ranking.
-fn rerank_memory_score(base_score: f32, mem: &Memory, terms: &[String], _rank: usize) -> f32 {
-    let filtered_terms = filter_stopwords(terms);
-    if filtered_terms.is_empty() {
-        return base_score;
-    }
-
-    let mut boost_factor = 1.0;
-
-    // Content match boost (multiplicative boost per match)
-    let content_lower = mem.content.to_lowercase();
-    let content_matches = filtered_terms
-        .iter()
-        .filter(|t| content_lower.contains(t.as_str()))
-        .count();
-    if content_matches > 0 {
-        boost_factor *= 1.0 + (content_matches as f32 * 0.12);
-    }
-
-    // Tag match boost (bidirectional: query term in tag OR tag in query term)
-    let tag_matches = filtered_terms
-        .iter()
-        .filter(|term| {
-            mem.tags.iter().any(|tag| {
-                let tag_lower = tag.to_lowercase();
-                tag_lower.contains(term.as_str()) || term.contains(&tag_lower)
-            })
-        })
-        .count();
-    if tag_matches > 0 {
-        boost_factor *= 1.0 + (tag_matches as f32 * 0.20);
-    }
-
-    // Path match boost (multiplicative boost per match)
-    if let Some(path) = &mem.file_path {
-        let path_lower = path.to_lowercase();
-        let path_matches = filtered_terms
-            .iter()
-            .filter(|t| path_lower.contains(t.as_str()))
-            .count();
-        if path_matches > 0 {
-            boost_factor *= 1.0 + (path_matches as f32 * 0.15);
-        }
-    }
-
-    // Language match boost (small boost if language matches query)
-    if let Some(lang) = &mem.language {
-        let lang_lower = lang.to_lowercase();
-        if filtered_terms
-            .iter()
-            .any(|t| lang_lower.contains(t.as_str()))
-        {
-            boost_factor *= 1.08;
-        }
-    }
-
-    // Importance boost (small additive factor)
-    let importance_boost = mem.importance * 0.05;
-
-    base_score * boost_factor + importance_boost
-}
-
 fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
     let tags_str: Option<String> = r.get(4)?;
     let tags: Vec<String> = tags_str
@@ -863,6 +788,38 @@ mod search_tests {
 
         assert!(hits.is_empty());
         assert_eq!(state.embedder.cache_len(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn superseding_memory_removes_old_vector_immediately() {
+        let dir = std::env::temp_dir().join(format!(
+            "biturbo-supersede-index-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let state = AppState::open(&dir).unwrap();
+        let old = remember(
+            &state,
+            RememberInput {
+                content: "the database is a json file".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let new = remember(
+            &state,
+            RememberInput {
+                content: "sqlite is the durable source of truth".into(),
+                supersedes: Some(old.uid.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let index = state.get_or_load_index(&state.default_project_id).unwrap();
+        assert!(!index.contains_uid(&old.uid));
+        assert!(index.contains_uid(&new.uid));
+        assert_eq!(index.len(), 1);
         std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -126,6 +126,7 @@ pub fn run() {
             commands::ensure_project_marker_files,
             commands::get_project,
             commands::ingest_project,
+            commands::start_ingest,
             commands::ingest_multiple_projects,
             commands::operation_status,
             commands::list_operations,

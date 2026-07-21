@@ -138,6 +138,11 @@ export const api = {
       args: { project_id, root_path },
     }),
 
+  startIngest: (project_id: string, root_path: string) =>
+    invoke<Operation>("start_ingest", {
+      args: { project_id, root_path },
+    }),
+
   operationStatus: (id: string) => invoke<Operation>("operation_status", { id }),
   listOperations: (limit = 100) => invoke<Operation[]>("list_operations", { limit }),
   cancelOperation: (id: string) => invoke<Operation>("cancel_operation", { id }),

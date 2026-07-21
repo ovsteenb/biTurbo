@@ -67,18 +67,19 @@ fn prepare_database(db_path: &Path) -> BiResult<()> {
         return Ok(());
     }
 
-    let backup = if existed {
+    let stamp = chrono::Utc::now().timestamp_millis();
+    let (backup, index_metadata_backup) = if existed {
         let backup_dir = parent.join("backups");
         std::fs::create_dir_all(&backup_dir)?;
         let path = backup_dir.join(format!(
             "biturbo-pre-v{}-{}.db",
-            CURRENT_SCHEMA_VERSION,
-            chrono::Utc::now().timestamp_millis()
+            CURRENT_SCHEMA_VERSION, stamp
         ));
         conn.backup(DatabaseName::Main, &path, None)?;
-        Some(path)
+        let metadata = backup_index_metadata(parent, &backup_dir, stamp)?;
+        (Some(path), metadata)
     } else {
-        None
+        (None, Vec::new())
     };
 
     if let Err(error) = run_migrations(&mut conn) {
@@ -89,11 +90,49 @@ fn prepare_database(db_path: &Path) -> BiResult<()> {
                 None::<fn(rusqlite::backup::Progress)>,
             );
         }
+        restore_index_metadata(&index_metadata_backup);
         let _ = fs2::FileExt::unlock(&lock);
         return Err(error);
     }
     fs2::FileExt::unlock(&lock)?;
     Ok(())
+}
+
+fn backup_index_metadata(
+    data_dir: &Path,
+    backup_dir: &Path,
+    stamp: i64,
+) -> BiResult<Vec<(PathBuf, PathBuf)>> {
+    let indices = data_dir.join("indices");
+    if !indices.is_dir() {
+        return Ok(Vec::new());
+    }
+    let destination = backup_dir.join(format!(
+        "index-metadata-pre-v{}-{stamp}",
+        CURRENT_SCHEMA_VERSION
+    ));
+    let mut copied = Vec::new();
+    for entry in std::fs::read_dir(indices)? {
+        let entry = entry?;
+        let source = entry.path();
+        if source.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        std::fs::create_dir_all(&destination)?;
+        let target = destination.join(entry.file_name());
+        std::fs::copy(&source, &target)?;
+        copied.push((target, source));
+    }
+    Ok(copied)
+}
+
+fn restore_index_metadata(files: &[(PathBuf, PathBuf)]) {
+    for (backup, original) in files {
+        if let Some(parent) = original.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(backup, original);
+    }
 }
 
 pub fn rebuild_fts_index(conn: &rusqlite::Connection) -> BiResult<usize> {
@@ -552,6 +591,9 @@ mod migration_tests {
     #[test]
     fn opening_legacy_database_preserves_data_and_creates_backup() {
         let db_path = temp_db();
+        let indices = db_path.parent().unwrap().join("indices");
+        std::fs::create_dir_all(&indices).unwrap();
+        std::fs::write(indices.join("default.uidmap.json"), "{\"legacy\":true}").unwrap();
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(
@@ -580,6 +622,9 @@ mod migration_tests {
                     .to_string_lossy()
                     .starts_with("biturbo-pre-v1-")
             })
+        }));
+        assert!(std::fs::read_dir(&backups).unwrap().flatten().any(|entry| {
+            entry.path().is_dir() && entry.path().join("default.uidmap.json").is_file()
         }));
 
         std::fs::remove_dir_all(db_path.parent().unwrap()).ok();

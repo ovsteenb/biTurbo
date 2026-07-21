@@ -13,6 +13,17 @@ pub struct RecallExplanation {
     pub fts_rank: Option<usize>,
     pub matched_terms: Vec<String>,
     pub feedback_boost: f32,
+    pub applied_boosts: RankingBoosts,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankingBoosts {
+    pub content_matches: usize,
+    pub tag_matches: usize,
+    pub path_matches: usize,
+    pub language_match: bool,
+    pub multiplier: f32,
+    pub importance_boost: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +96,7 @@ pub fn explain(
                 .filter(|term| content.contains(term.as_str()))
                 .cloned()
                 .collect();
+            let applied_boosts = ranking_boosts(&hit.memory, &query_terms);
             ExplainedMemory {
                 hit,
                 explanation: RecallExplanation {
@@ -92,6 +104,7 @@ pub fn explain(
                     fts_rank: fts_ranks.get(uid.as_str()).copied(),
                     matched_terms,
                     feedback_boost: boosts.get(&uid).copied().unwrap_or(0.0),
+                    applied_boosts,
                 },
             }
         })
@@ -119,6 +132,98 @@ pub fn explain(
         Ok(())
     })?;
     Ok(RecallResponse { recall_id, results })
+}
+
+pub(crate) fn fuse_rankings(
+    vector_hits: &[crate::index_engine::SearchHit],
+    fts_hits: &[(String, f64)],
+) -> Vec<(String, f32)> {
+    let mut fused = HashMap::new();
+    const RRF_K: f32 = 60.0;
+    for (rank, hit) in vector_hits.iter().enumerate() {
+        let rank_score = 1.0 / (RRF_K + rank as f32 + 1.0);
+        let similarity = hit.score.clamp(0.0, 1.0);
+        *fused.entry(hit.uid.clone()).or_insert(0.0) += rank_score * (0.5 + 0.5 * similarity);
+    }
+    for (rank, (uid, _)) in fts_hits.iter().enumerate() {
+        *fused.entry(uid.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0);
+    }
+    let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ranked
+}
+
+pub(crate) fn ranking_boosts(memory: &memory::Memory, terms: &[String]) -> RankingBoosts {
+    let terms = memory::filter_stopwords(terms);
+    if terms.is_empty() {
+        return RankingBoosts {
+            content_matches: 0,
+            tag_matches: 0,
+            path_matches: 0,
+            language_match: false,
+            multiplier: 1.0,
+            importance_boost: 0.0,
+        };
+    }
+    let content = memory.content.to_lowercase();
+    let content_matches = terms
+        .iter()
+        .filter(|term| content.contains(term.as_str()))
+        .count();
+    let tag_matches = terms
+        .iter()
+        .filter(|term| {
+            memory.tags.iter().any(|tag| {
+                let tag = tag.to_lowercase();
+                tag.contains(term.as_str()) || term.contains(&tag)
+            })
+        })
+        .count();
+    let path_matches = memory
+        .file_path
+        .as_ref()
+        .map(|path| {
+            let path = path.to_lowercase();
+            terms
+                .iter()
+                .filter(|term| path.contains(term.as_str()))
+                .count()
+        })
+        .unwrap_or(0);
+    let language_match = memory.language.as_ref().is_some_and(|language| {
+        let language = language.to_lowercase();
+        terms.iter().any(|term| language.contains(term.as_str()))
+    });
+    let mut multiplier = 1.0;
+    if content_matches > 0 {
+        multiplier *= 1.0 + content_matches as f32 * 0.12;
+    }
+    if tag_matches > 0 {
+        multiplier *= 1.0 + tag_matches as f32 * 0.20;
+    }
+    if path_matches > 0 {
+        multiplier *= 1.0 + path_matches as f32 * 0.15;
+    }
+    if language_match {
+        multiplier *= 1.08;
+    }
+    RankingBoosts {
+        content_matches,
+        tag_matches,
+        path_matches,
+        language_match,
+        multiplier,
+        importance_boost: memory.importance * 0.05,
+    }
+}
+
+pub(crate) fn apply_ranking_boost(
+    base_score: f32,
+    memory: &memory::Memory,
+    terms: &[String],
+) -> f32 {
+    let boosts = ranking_boosts(memory, terms);
+    base_score * boosts.multiplier + boosts.importance_boost
 }
 
 pub fn submit_feedback(

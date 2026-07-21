@@ -1,8 +1,8 @@
 use crate::error::{BiError, BiResult};
+use crate::ingest;
 use crate::memory::{self, Memory, MemoryWithScore, RememberInput, UpdateInput};
 use crate::project::{self, CreateProjectInput};
 use crate::state::AppState;
-use crate::{consolidate, ingest};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -14,6 +14,7 @@ pub async fn run_mcp_server_stdio() -> anyhow::Result<()> {
         .join("com.biturbo.app");
     std::fs::create_dir_all(&data_dir).ok();
     let state = Arc::new(AppState::open(&data_dir)?);
+    crate::operations::resume_pending(state.clone())?;
 
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -279,12 +280,10 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         }
         "consolidate" => {
             let project_id = args.get("project_id").and_then(|v| v.as_str());
-            let r = if let Some(p) = project_id {
+            if let Some(p) = project_id {
                 require_project(p)?;
-                consolidate::consolidate(state, Some(p))?
-            } else {
-                crate::scheduler::run_now_blocking(state)?
-            };
+            }
+            let r = crate::operations::run_consolidate_blocking(state, project_id)?;
             text(&serde_json::to_string_pretty(&r)?)
         }
         "consolidate_status" => {

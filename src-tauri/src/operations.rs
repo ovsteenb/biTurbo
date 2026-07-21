@@ -272,6 +272,17 @@ pub fn start_consolidate(state: &AppState, project_id: Option<&str>) -> BiResult
     Ok(operation)
 }
 
+pub fn run_consolidate_blocking(
+    state: &AppState,
+    project_id: Option<&str>,
+) -> BiResult<crate::consolidate::ConsolidateReport> {
+    if let Some(project_id) = project_id {
+        crate::project::get(state, project_id)?;
+    }
+    let operation = create(state, "consolidate", project_id, None)?;
+    execute_consolidate(state, &operation.id, project_id)
+}
+
 pub fn start_model_rebuild(
     state: &AppState,
     project_id: &str,
@@ -294,6 +305,71 @@ pub fn start_model_rebuild(
         })
         .ok();
     Ok(operation)
+}
+
+pub fn retry(state: &AppState, id: &str) -> BiResult<Operation> {
+    let operation = get(state, id)?;
+    if !matches!(operation.status.as_str(), "failed" | "cancelled") {
+        return Err(BiError::Invalid(format!("operation {id} is not retryable")));
+    }
+    match operation.kind.as_str() {
+        "ingest" | "watch_ingest" => {
+            let project_id = operation
+                .project_id
+                .ok_or_else(|| BiError::Invalid("ingest retry has no project_id".into()))?;
+            let root = operation
+                .checkpoint
+                .as_ref()
+                .and_then(|value| value.get("root_path"))
+                .and_then(|value| value.as_str())
+                .map(PathBuf::from)
+                .ok_or_else(|| BiError::Invalid("ingest retry has no root_path".into()))?;
+            start_ingest(state, &project_id, &root)
+        }
+        "multi_ingest" => {
+            let projects = operation
+                .checkpoint
+                .as_ref()
+                .and_then(|value| value.get("projects"))
+                .and_then(|value| value.as_array())
+                .ok_or_else(|| BiError::Invalid("multi-ingest retry has no projects".into()))?
+                .iter()
+                .map(|project| {
+                    Ok((
+                        project
+                            .get("project_id")
+                            .and_then(|value| value.as_str())
+                            .ok_or_else(|| BiError::Invalid("retry project has no id".into()))?
+                            .to_string(),
+                        PathBuf::from(
+                            project
+                                .get("root_path")
+                                .and_then(|value| value.as_str())
+                                .ok_or_else(|| {
+                                    BiError::Invalid("retry project has no root_path".into())
+                                })?,
+                        ),
+                    ))
+                })
+                .collect::<BiResult<Vec<_>>>()?;
+            start_multi_ingest(state, projects)
+        }
+        "consolidate" => start_consolidate(state, operation.project_id.as_deref()),
+        "model_rebuild" => {
+            let project_id = operation
+                .project_id
+                .ok_or_else(|| BiError::Invalid("model retry has no project_id".into()))?;
+            let model = operation
+                .checkpoint
+                .as_ref()
+                .and_then(|value| value.get("model"))
+                .and_then(|value| value.as_str());
+            start_model_rebuild(state, &project_id, model)
+        }
+        kind => Err(BiError::Invalid(format!(
+            "operation kind {kind} is not retryable"
+        ))),
+    }
 }
 
 pub fn resume_pending(state: Arc<AppState>) -> BiResult<usize> {
