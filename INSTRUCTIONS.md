@@ -67,7 +67,7 @@ When in doubt, recall. It is cheap. It is correct.
 
 | Tool | When to use it |
 |---|---|
-| `ingest_project` | Walk a directory, parse with tree-sitter (rust/typescript/javascript/python/go), embed function/class chunks as `code` memories, and store the directory tree. **Run this once per project after `create_project`**, then re-run when the code changes meaningfully. |
+| `ingest_project` | Walk a directory, parse with tree-sitter (incl. rust/typescript/javascript/python/go/kotlin/java and more), embed function/class chunks as `code` memories, and store the directory tree. **Run this once per project after `create_project`**, then re-run when the code changes meaningfully. |
 
 ### Maintenance
 
