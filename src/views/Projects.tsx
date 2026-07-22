@@ -350,7 +350,7 @@ export function Projects() {
                         className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[10px] text-success"
                         title="Watching for changes"
                       >
-                        <Radar size={9} className="animate-pulse" /> watching
+                        <Radar size={9} /> watching
                       </span>
                     )}
                   </div>
@@ -412,7 +412,7 @@ export function Projects() {
                     )}
                     title={watchOn[p.id] ? "Stop watching for changes" : "Watch for changes; auto-reingest on file events"}
                   >
-                    <Radar size={12} className={watchOn[p.id] ? "animate-pulse" : ""} />
+                    <Radar size={12} />
                     {watchOn[p.id] ? "Unwatch" : "Watch"}
                   </button>
                 )}

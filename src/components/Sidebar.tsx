@@ -87,7 +87,7 @@ export function Sidebar() {
       <div className="border-t border-border-subtle p-3">
         <div className="flex items-center gap-2 rounded-md bg-surface-2 px-3 py-2">
           <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-pulse_dot rounded-full bg-success opacity-75" />
+            {/* Static status dot — infinite CSS pulse keeps WebKit busy under WSLg zoom. */}
             <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
           </span>
           <div className="flex-1 text-xs">
