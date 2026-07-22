@@ -27,8 +27,7 @@ pub fn setup<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         MenuItem::with_id(app, MENU_STATS_MEMORIES, "Memories: —", false, None::<&str>)?;
     let stat_projects =
         MenuItem::with_id(app, MENU_STATS_PROJECTS, "Projects: —", false, None::<&str>)?;
-    let stat_agents =
-        MenuItem::with_id(app, MENU_STATS_AGENTS, "Agents: —", false, None::<&str>)?;
+    let stat_agents = MenuItem::with_id(app, MENU_STATS_AGENTS, "Agents: —", false, None::<&str>)?;
 
     let sep1 = PredefinedMenuItem::separator(app)?;
 
@@ -41,27 +40,29 @@ pub fn setup<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     // — Actions —
     let consolidate =
         MenuItem::with_id(app, MENU_CONSOLIDATE, "Consolidate Now", true, None::<&str>)?;
-    let open_data =
-        MenuItem::with_id(app, MENU_OPEN_DATA, "Open Data Folder", true, None::<&str>)?;
+    let open_data = MenuItem::with_id(app, MENU_OPEN_DATA, "Open Data Folder", true, None::<&str>)?;
 
     let sep3 = PredefinedMenuItem::separator(app)?;
 
     // — Quit —
     let quit = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[
-        &stat_memories,
-        &stat_projects,
-        &stat_agents,
-        &sep1,
-        &show,
-        &hide,
-        &sep2,
-        &consolidate,
-        &open_data,
-        &sep3,
-        &quit,
-    ])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &stat_memories,
+            &stat_projects,
+            &stat_agents,
+            &sep1,
+            &show,
+            &hide,
+            &sep2,
+            &consolidate,
+            &open_data,
+            &sep3,
+            &quit,
+        ],
+    )?;
 
     let icon = app
         .default_window_icon()
@@ -110,38 +111,36 @@ pub fn setup<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let stat_ag = stat_agents.clone();
     std::thread::Builder::new()
         .name("biturbo-tray-stats".into())
-        .spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(30));
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(30));
 
-                let (memories, projects, agents) = {
-                    let Some(state) = app_handle.try_state::<AppState>() else {
-                        continue;
-                    };
-                    let Ok(conn) = state.db.conn() else {
-                        continue;
-                    };
-                    let memories: i64 =
-                        conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
-                            .unwrap_or(0);
-                    let projects: i64 =
-                        conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
-                            .unwrap_or(0);
-                    let agents: i64 =
-                        conn.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
-                            .unwrap_or(0);
-                    (memories, projects, agents)
+            let (memories, projects, agents) = {
+                let Some(state) = app_handle.try_state::<AppState>() else {
+                    continue;
                 };
+                let Ok(conn) = state.db.conn() else {
+                    continue;
+                };
+                let memories: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+                    .unwrap_or(0);
+                let projects: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+                    .unwrap_or(0);
+                let agents: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
+                    .unwrap_or(0);
+                (memories, projects, agents)
+            };
 
-                let _ = stat_mem.set_text(format!("Memories: {memories}"));
-                let _ = stat_proj.set_text(format!("Projects: {projects}"));
-                let _ = stat_ag.set_text(format!("Agents: {agents}"));
+            let _ = stat_mem.set_text(format!("Memories: {memories}"));
+            let _ = stat_proj.set_text(format!("Projects: {projects}"));
+            let _ = stat_ag.set_text(format!("Agents: {agents}"));
 
-                if let Some(tray) = app_handle.tray_by_id(TRAY_ID) {
-                    let _ = tray.set_tooltip(Some(format!(
-                        "biTurbo — {memories} memories · {projects} projects · {agents} agents"
-                    )));
-                }
+            if let Some(tray) = app_handle.tray_by_id(TRAY_ID) {
+                let _ = tray.set_tooltip(Some(format!(
+                    "biTurbo — {memories} memories · {projects} projects · {agents} agents"
+                )));
             }
         })
         .ok();

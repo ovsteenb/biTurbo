@@ -117,16 +117,17 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
     let tags_json = serde_json::to_string(&input.tags.clone().unwrap_or_default())?;
 
     state.db.write(|tx| {
-        let supersedes_id: Option<i64> = match input.supersedes.as_deref() {
+        let superseded: Option<(i64, String)> = match input.supersedes.as_deref() {
             Some(old_uid) => tx
                 .query_row(
-                    "SELECT id FROM memories WHERE uid = ?1 AND project_id = ?2 AND superseded_by IS NULL",
+                    "SELECT id, uid FROM memories WHERE uid = ?1 AND project_id = ?2 AND superseded_by IS NULL",
                     rusqlite::params![old_uid, project_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?,
             None => None,
         };
+        let supersedes_id = superseded.as_ref().map(|(id, _)| *id);
         tx.execute(
             "INSERT INTO memories(uid, project_id, mem_type, content, tags, source_agent,
                                   importance, created_at, updated_at, last_access,
@@ -149,13 +150,14 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             ],
         )?;
         let new_id = tx.last_insert_rowid();
-        if let Some(old_id) = supersedes_id {
+        if let Some((old_id, old_uid)) = superseded {
             tx.execute(
                 "UPDATE memories
                  SET superseded_by = ?1, updated_at = ?2
                  WHERE id = ?3 AND superseded_by IS NULL",
                 rusqlite::params![new_id, now, old_id],
             )?;
+            crate::persistence::queue_index_delete(tx, &project_id, &old_uid)?;
         }
         tx.execute(
             "UPDATE projects SET memory_count = memory_count + 1, updated_at = ?1 WHERE id = ?2",
@@ -169,11 +171,11 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             Some(&uid),
             Some(&serde_json::json!({"mem_type": mem_type})),
         )?;
+        crate::persistence::queue_index_upsert(tx, &project_id, &uid, &input.content)?;
         Ok(())
     })?;
 
-    // Marks the index dirty; the background flusher in AppState persists it.
-    state.embed_and_add(&project_id, &uid, &input.content)?;
+    state.replay_index_mutations(&project_id)?;
 
     get(state, &uid)?.ok_or_else(|| BiError::Internal("memory not found post-insert".into()))
 }
@@ -195,9 +197,6 @@ pub fn get(state: &AppState, uid: &str) -> BiResult<Option<Memory>> {
 
 pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
     let mem = get(state, uid)?.ok_or_else(|| BiError::NotFound(uid.into()))?;
-    if let Ok(idx) = state.get_or_load_index(&mem.project_id) {
-        let _ = idx.remove(uid);
-    }
     let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
         tx.execute(
@@ -210,8 +209,10 @@ pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
             rusqlite::params![now, mem.project_id],
         )?;
         log_activity(tx, Some(&mem.project_id), None, "forget", Some(uid), None)?;
+        crate::persistence::queue_index_delete(tx, &mem.project_id, uid)?;
         Ok(())
     })?;
+    state.replay_index_mutations(&mem.project_id)?;
     Ok(true)
 }
 
@@ -250,11 +251,14 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
             Some(uid),
             None,
         )?;
+        if input.content.is_some() {
+            crate::persistence::queue_index_upsert(tx, &existing.project_id, uid, &new_content)?;
+        }
         Ok(())
     })?;
 
     if input.content.is_some() {
-        state.embed_and_add(&existing.project_id, uid, &new_content)?;
+        state.replay_index_mutations(&existing.project_id)?;
     }
 
     get(state, uid)?.ok_or_else(|| BiError::Internal("memory vanished after update".into()))
@@ -271,8 +275,7 @@ pub fn search(
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    
-    state.embedder.release_if_idle();
+
     let k = k.clamp(1, 100);
     if let Some(mem_type) = mem_type {
         MemType::from_str(mem_type)?;
@@ -282,6 +285,7 @@ pub fn search(
     } else {
         project_id.to_string()
     };
+    state.embedder_for_project(&project_id)?.release_if_idle();
 
     let kk = (k * 3).max(30);
     let conn = state.db.conn()?;
@@ -296,30 +300,31 @@ pub fn search(
         None
     };
 
+    // turbovec expects a non-empty allowlist. More importantly, an empty
+    // typed candidate set is already a definitive empty result and should not
+    // load an embedding model or enter vector search at all.
+    if allowlist_uids.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(Vec::new());
+    }
+
     let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist_uids.as_deref())?;
     let fts_uids = fts_search(&conn, query, &project_id, mem_type, kk)?;
 
-    let mut fused: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
-    const RRF_K: f32 = 60.0;
-    for (rank, h) in vec_hits.iter().enumerate() {
-        let rank_score = 1.0 / (RRF_K + rank as f32 + 1.0);
-        let sim = h.score.clamp(0.0, 1.0);
-        let score = rank_score * (0.5 + 0.5 * sim);
-        *fused.entry(h.uid.clone()).or_insert(0.0) += score;
-    }
-    for (rank, (uid, _bm25)) in fts_uids.iter().enumerate() {
-        let score = 1.0 / (RRF_K + rank as f32 + 1.0);
-        *fused.entry(uid.clone()).or_insert(0.0) += score;
-    }
-
-    let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut ranked = crate::recall::fuse_rankings(&vec_hits, &fts_uids);
     // Keep more candidates for reranking (k*4 gives reranker more to work with).
     ranked.truncate(k.saturating_mul(4).max(k));
 
     if ranked.is_empty() {
         return Ok(Vec::new());
     }
+
+    let feedback_boosts = crate::recall::feedback_boosts(
+        state,
+        &ranked
+            .iter()
+            .map(|(uid, _)| uid.clone())
+            .collect::<Vec<_>>(),
+    )?;
 
     let n = ranked.len();
     let placeholders = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
@@ -382,10 +387,11 @@ pub fn search(
     let query_terms = tokenize_query(query);
     let mut reranked: Vec<MemoryWithScore> = ranked
         .into_iter()
-        .enumerate()
-        .filter_map(|(rank, (uid, base_score))| {
+        .filter_map(|(uid, base_score)| {
             by_uid.remove(&uid).map(|memory| {
-                let reranked_score = rerank_memory_score(base_score, &memory, &query_terms, rank);
+                let reranked_score =
+                    crate::recall::apply_ranking_boost(base_score, &memory, &query_terms)
+                        + feedback_boosts.get(&uid).copied().unwrap_or(0.0);
                 MemoryWithScore {
                     memory,
                     score: reranked_score,
@@ -404,7 +410,7 @@ pub fn search(
     Ok(reranked.into_iter().take(k).collect())
 }
 
-fn fts_search(
+pub(crate) fn fts_search(
     conn: &rusqlite::Connection,
     query: &str,
     project_id: &str,
@@ -590,18 +596,117 @@ fn tokenize_query(query: &str) -> Vec<String> {
 }
 
 /// Filter out common stopwords from query terms
-fn filter_stopwords(terms: &[String]) -> Vec<String> {
+pub(crate) fn filter_stopwords(terms: &[String]) -> Vec<String> {
     const STOPWORDS: &[&str] = &[
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
-        "by", "from", "up", "about", "into", "through", "during", "before", "after", "above",
-        "below", "between", "among", "is", "was", "are", "were", "been", "be", "have", "has",
-        "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must",
-        "shall", "can", "need", "dare", "ought", "used", "how", "what", "when", "where", "why",
-        "which", "who", "whom", "whose", "this", "that", "these", "those", "i", "you", "he",
-        "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his", "its",
-        "our", "their", "myself", "yourself", "himself", "herself", "itself", "ourselves",
-        "themselves", "all", "each", "every", "both", "few", "more", "most", "other", "some",
-        "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "up",
+        "about",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "among",
+        "is",
+        "was",
+        "are",
+        "were",
+        "been",
+        "be",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "ought",
+        "used",
+        "how",
+        "what",
+        "when",
+        "where",
+        "why",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "myself",
+        "yourself",
+        "himself",
+        "herself",
+        "itself",
+        "ourselves",
+        "themselves",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
     ];
 
     terms
@@ -609,69 +714,6 @@ fn filter_stopwords(terms: &[String]) -> Vec<String> {
         .filter(|term| !STOPWORDS.contains(&term.as_str()))
         .cloned()
         .collect()
-}
-
-/// Second-stage reranker: boost score based on term matches in content, tags, path, and language.
-/// Uses multiplicative boosts to refine rather than override the base RRF ranking.
-fn rerank_memory_score(base_score: f32, mem: &Memory, terms: &[String], _rank: usize) -> f32 {
-    let filtered_terms = filter_stopwords(terms);
-    if filtered_terms.is_empty() {
-        return base_score;
-    }
-
-    let mut boost_factor = 1.0;
-
-    // Content match boost (multiplicative boost per match)
-    let content_lower = mem.content.to_lowercase();
-    let content_matches = filtered_terms
-        .iter()
-        .filter(|t| content_lower.contains(t.as_str()))
-        .count();
-    if content_matches > 0 {
-        boost_factor *= 1.0 + (content_matches as f32 * 0.12);
-    }
-
-    // Tag match boost (bidirectional: query term in tag OR tag in query term)
-    let tag_matches = filtered_terms
-        .iter()
-        .filter(|term| {
-            mem.tags.iter().any(|tag| {
-                let tag_lower = tag.to_lowercase();
-                tag_lower.contains(term.as_str()) || term.contains(&tag_lower)
-            })
-        })
-        .count();
-    if tag_matches > 0 {
-        boost_factor *= 1.0 + (tag_matches as f32 * 0.20);
-    }
-
-    // Path match boost (multiplicative boost per match)
-    if let Some(path) = &mem.file_path {
-        let path_lower = path.to_lowercase();
-        let path_matches = filtered_terms
-            .iter()
-            .filter(|t| path_lower.contains(t.as_str()))
-            .count();
-        if path_matches > 0 {
-            boost_factor *= 1.0 + (path_matches as f32 * 0.15);
-        }
-    }
-
-    // Language match boost (small boost if language matches query)
-    if let Some(lang) = &mem.language {
-        let lang_lower = lang.to_lowercase();
-        if filtered_terms
-            .iter()
-            .any(|t| lang_lower.contains(t.as_str()))
-        {
-            boost_factor *= 1.08;
-        }
-    }
-
-    // Importance boost (small additive factor)
-    let importance_boost = mem.importance * 0.05;
-
-    base_score * boost_factor + importance_boost
 }
 
 fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
@@ -725,5 +767,59 @@ mod search_tests {
         assert!(q.contains("\"auth\"*"));
         assert!(q.contains("\"login-flow\"*"));
         assert!(!q.contains("!"));
+    }
+
+    #[test]
+    fn empty_type_filter_returns_without_vector_search() {
+        let dir = std::env::temp_dir().join(format!(
+            "biturbo-empty-filter-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let state = AppState::open(&dir).unwrap();
+
+        let hits = search(
+            &state,
+            &state.default_project_id,
+            "semaphore violet",
+            3,
+            Some("episode"),
+        )
+        .unwrap();
+
+        assert!(hits.is_empty());
+        assert_eq!(state.embedder.cache_len(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn superseding_memory_removes_old_vector_immediately() {
+        let dir = std::env::temp_dir().join(format!(
+            "biturbo-supersede-index-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let state = AppState::open(&dir).unwrap();
+        let old = remember(
+            &state,
+            RememberInput {
+                content: "the database is a json file".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let new = remember(
+            &state,
+            RememberInput {
+                content: "sqlite is the durable source of truth".into(),
+                supersedes: Some(old.uid.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let index = state.get_or_load_index(&state.default_project_id).unwrap();
+        assert!(!index.contains_uid(&old.uid));
+        assert!(index.contains_uid(&new.uid));
+        assert_eq!(index.len(), 1);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -14,7 +14,7 @@ const INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const STARTUP_DELAY: Duration = Duration::from_secs(60);
 const JOB_CHANNEL_CAPACITY: usize = 8;
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ConsolidateStatus {
     pub last_run_at: Option<i64>,
     pub next_run_in_secs: u64,
@@ -63,7 +63,7 @@ pub fn spawn(state: Arc<AppState>) {
         interval.tick().await;
         loop {
             interval.tick().await;
-            state_for_release.embedder.release_if_idle();
+            state_for_release.release_idle_embedders();
         }
     });
 

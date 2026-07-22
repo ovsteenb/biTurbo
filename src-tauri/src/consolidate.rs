@@ -156,7 +156,7 @@ fn find_duplicates(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(
                 let by_uid: std::collections::HashMap<&str, &Memory> =
                     non_code.iter().map(|m| (m.uid.as_str(), *m)).collect();
                 let texts: Vec<&str> = non_code.iter().map(|m| m.content.as_str()).collect();
-                let embeddings = state.embedder.embed_batch(&texts)?;
+                let embeddings = state.embedder_for_project(&pid)?.embed_batch(&texts)?;
                 for (i, vec) in embeddings.iter().enumerate() {
                     let a = non_code[i];
                     let hits = idx.search(vec, 5, None)?;

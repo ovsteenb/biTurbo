@@ -5,6 +5,7 @@ import { MemoryCard } from "../components/MemoryCard";
 import { MemoryDetail } from "../components/MemoryDetail";
 import { Search, X, FileCode2, Hash, ExternalLink, Copy, Trash2 } from "lucide-react";
 import type { ContextMenuItem } from "../components/ContextMenu";
+import type { RecallExplanation } from "../lib/types";
 import clsx from "clsx";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
@@ -23,6 +24,8 @@ export function Memories() {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<typeof memories>([]);
+  const [recallId, setRecallId] = useState<string | null>(null);
+  const [explanations, setExplanations] = useState<Record<string, RecallExplanation>>({});
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
   const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
   const [minImportance, setMinImportance] = useState(0);
@@ -48,6 +51,8 @@ export function Memories() {
     const trimmed = query.trim();
     if (!trimmed) {
       setResults([]);
+      setRecallId(null);
+      setExplanations({});
       return;
     }
     const seq = ++searchSeq.current;
@@ -56,12 +61,18 @@ export function Memories() {
       (async () => {
         setSearching(true);
         try {
-          const hits = await api.search({
+          const response = await api.recallExplain({
             project_id: currentProjectId,
             query: trimmed,
             k: 50,
           });
-          if (seq === searchSeq.current) setResults(hits);
+          if (seq === searchSeq.current) {
+            setResults(response.results);
+            setRecallId(response.recall_id);
+            setExplanations(
+              Object.fromEntries(response.results.map((hit) => [hit.uid, hit.explanation])),
+            );
+          }
         } finally {
           if (seq === searchSeq.current) setSearching(false);
         }
@@ -272,8 +283,28 @@ export function Memories() {
                   key={m.uid}
                   memory={m}
                   active={selectedUid === m.uid}
-                  onClick={() => setSelected(m.uid)}
+                  onClick={() => {
+                    setSelected(m.uid);
+                    if (recallId) {
+                      void api.submitRecallFeedback(recallId, m.uid, 1, "implicit");
+                    }
+                  }}
                   contextMenuItems={buildMemoryMenu(m)}
+                  explanation={explanations[m.uid]}
+                  onFeedback={
+                    recallId
+                      ? (value) => {
+                          void api
+                            .submitRecallFeedback(recallId, m.uid, value, "explicit")
+                            .then(() =>
+                              showToast({
+                                kind: "ok",
+                                text: value > 0 ? "Marked useful" : "Marked not useful",
+                              }),
+                            );
+                        }
+                      : undefined
+                  }
                 />
               ))}
               {!query && hasMore && (

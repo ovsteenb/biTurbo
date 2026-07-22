@@ -64,7 +64,7 @@ interface AppStore {
 
   ingestJobs: Record<string, IngestProgress>;
   startIngest: (project_id: string, root_path: string) => Promise<string>;
-  cancelIngest: (job_id: string) => void;
+  cancelIngest: (job_id: string) => Promise<void>;
 
   bootstrapLoaded: boolean;
   bootstrapOnce: () => Promise<void>;
@@ -223,11 +223,13 @@ export const useApp = create<AppStore>((set, get) => ({
     }));
     return job.job_id;
   },
-  cancelIngest: (job_id) =>
+  cancelIngest: async (job_id) => {
+    await api.cancelOperation(job_id);
     set((s) => {
       const { [job_id]: _, ...rest } = s.ingestJobs;
       return { ingestJobs: rest };
-    }),
+    });
+  },
 
   bootstrapLoaded: false,
   bootstrapOnce: async () => {

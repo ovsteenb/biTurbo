@@ -1,5 +1,6 @@
 //! Tauri IPC commands. The frontend calls these via `invoke<T>("name", { args })`.
 
+pub use crate::application::{ActivityEntry, AgentEntry, Bootstrap, Stats};
 use crate::error::BiResult;
 use crate::ingest;
 use crate::memory::{self, Memory, MemoryWithScore, RememberInput, UpdateInput};
@@ -7,40 +8,7 @@ use crate::project::{self, CreateProjectInput, Project};
 use crate::scheduler::ConsolidateStatus;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
-
-#[derive(Serialize)]
-pub struct Stats {
-    pub total_memories: i64,
-    pub total_projects: i64,
-    pub total_agents: i64,
-    pub by_type: Vec<(String, i64)>,
-    pub by_project: Vec<(String, i64)>,
-    pub index_bytes: u64,
-    pub recent_writes_7d: i64,
-    pub recent_reads_7d: i64,
-}
-
-#[derive(Serialize)]
-pub struct ActivityEntry {
-    pub id: i64,
-    pub project_id: Option<String>,
-    pub agent_id: Option<String>,
-    pub action: String,
-    pub memory_uid: Option<String>,
-    pub detail: Option<serde_json::Value>,
-    pub created_at: i64,
-}
-
-#[derive(Serialize)]
-pub struct AgentEntry {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub last_seen: i64,
-    pub created_at: i64,
-    pub meta: Option<serde_json::Value>,
-}
+use tauri::State;
 
 #[tauri::command]
 pub fn ping() -> &'static str {
@@ -119,6 +87,42 @@ pub fn search_memories(
 }
 
 #[tauri::command]
+pub fn recall_explain(
+    state: State<'_, AppState>,
+    args: SearchArgs,
+) -> BiResult<crate::recall::RecallResponse> {
+    crate::recall::explain(
+        state.inner(),
+        args.project_id.as_deref().unwrap_or(""),
+        &args.query,
+        args.k.unwrap_or(10),
+        args.mem_type.as_deref(),
+    )
+}
+
+#[derive(Deserialize)]
+pub struct RecallFeedbackArgs {
+    pub recall_id: String,
+    pub memory_uid: String,
+    pub value: i8,
+    pub source: Option<String>,
+}
+
+#[tauri::command]
+pub fn submit_recall_feedback(
+    state: State<'_, AppState>,
+    args: RecallFeedbackArgs,
+) -> BiResult<()> {
+    crate::recall::submit_feedback(
+        state.inner(),
+        &args.recall_id,
+        &args.memory_uid,
+        args.value,
+        args.source.as_deref().unwrap_or("explicit"),
+    )
+}
+
+#[tauri::command]
 pub fn list_projects(state: State<'_, AppState>) -> BiResult<Vec<Project>> {
     project::list(state.inner())
 }
@@ -192,63 +196,25 @@ pub struct MultiIngestDone {
 
 #[tauri::command]
 pub fn ingest_project(state: State<'_, AppState>, args: IngestArgs) -> BiResult<IngestJobResponse> {
-    project::get(state.inner(), &args.project_id).map_err(|_| {
-        crate::error::BiError::Invalid(format!(
-            "project '{}' does not exist — create it first",
-            args.project_id
-        ))
-    })?;
     let root = std::path::PathBuf::from(&args.root_path);
-    if !root.exists() {
-        return Err(crate::error::BiError::Invalid(format!(
-            "root_path '{}' does not exist on disk",
-            args.root_path
-        )));
-    }
-
-    let job_id = format!("ing-{}", uuid::Uuid::new_v4());
-    let state_clone = state.inner().clone();
-    let project_id = args.project_id.clone();
-    let job_id_for_thread = job_id.clone();
-
-    std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        match ingest::ingest_project(&state_clone, &project_id, &root) {
-            Ok(result) => {
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "ingest:done",
-                        IngestDone {
-                            job_id: job_id_for_thread.clone(),
-                            project_id: project_id.clone(),
-                            files_indexed: result.files_indexed,
-                            chunks_indexed: result.chunks_indexed,
-                            edges_created: result.edges_created,
-                            elapsed_ms,
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "ingest:error",
-                        IngestError {
-                            job_id: job_id_for_thread,
-                            project_id: project_id.clone(),
-                            error: e.to_string(),
-                        },
-                    );
-                }
-            }
-        }
-    });
+    let operation = crate::operations::start_ingest(state.inner(), &args.project_id, &root)?;
 
     Ok(IngestJobResponse {
-        job_id,
+        job_id: operation.id,
         project_id: args.project_id,
     })
+}
+
+#[tauri::command]
+pub fn start_ingest(
+    state: State<'_, AppState>,
+    args: IngestArgs,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::start_ingest(
+        state.inner(),
+        &args.project_id,
+        std::path::Path::new(&args.root_path),
+    )
 }
 
 #[tauri::command]
@@ -256,68 +222,15 @@ pub fn ingest_multiple_projects(
     state: State<'_, AppState>,
     args: MultiIngestArgs,
 ) -> BiResult<IngestJobResponse> {
-    // Validate all projects exist and paths exist
-    for (project_id, root_path) in &args.projects {
-        project::get(state.inner(), project_id).map_err(|_| {
-            crate::error::BiError::Invalid(format!(
-                "project '{}' does not exist — create it first",
-                project_id
-            ))
-        })?;
-        let root = std::path::PathBuf::from(root_path);
-        if !root.exists() {
-            return Err(crate::error::BiError::Invalid(format!(
-                "root_path '{}' for project '{}' does not exist on disk",
-                root_path, project_id
-            )));
-        }
-    }
-
-    let job_id = format!("multi-ing-{}", uuid::Uuid::new_v4());
-    let state_clone = state.inner().clone();
-    let job_id_for_thread = job_id.clone();
     let projects: Vec<(String, std::path::PathBuf)> = args
         .projects
         .into_iter()
         .map(|(project_id, root_path)| (project_id, std::path::PathBuf::from(root_path)))
         .collect();
-
-    std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        match ingest::ingest_multiple_projects(&state_clone, projects) {
-            Ok(result) => {
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "multi-ingest:done",
-                        MultiIngestDone {
-                            job_id: job_id_for_thread.clone(),
-                            total_files_indexed: result.total_files_indexed,
-                            total_chunks_indexed: result.total_chunks_indexed,
-                            total_edges_created: result.total_edges_created,
-                            elapsed_ms,
-                            results: result.results,
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                if let Some(app) = &state_clone.app {
-                    let _ = app.emit(
-                        "ingest:error",
-                        IngestError {
-                            job_id: job_id_for_thread,
-                            project_id: "multiple".to_string(),
-                            error: e.to_string(),
-                        },
-                    );
-                }
-            }
-        }
-    });
+    let operation = crate::operations::start_multi_ingest(state.inner(), projects)?;
 
     Ok(IngestJobResponse {
-        job_id,
+        job_id: operation.id,
         project_id: "multiple".to_string(),
     })
 }
@@ -342,8 +255,42 @@ pub fn consolidate_now(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> BiResult<ConsolidateStatus> {
-    crate::scheduler::enqueue(state.inner(), project_id)?;
-    Ok(crate::scheduler::get_status())
+    crate::operations::start_consolidate(state.inner(), project_id.as_deref())?;
+    let mut status = crate::scheduler::get_status();
+    status.queued = true;
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn operation_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::get(state.inner(), &id)
+}
+
+#[tauri::command]
+pub fn list_operations(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> BiResult<Vec<crate::operations::Operation>> {
+    crate::operations::list(state.inner(), limit.unwrap_or(100))
+}
+
+#[tauri::command]
+pub fn cancel_operation(
+    state: State<'_, AppState>,
+    id: String,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::request_cancel(state.inner(), &id)
+}
+
+#[tauri::command]
+pub fn retry_operation(
+    state: State<'_, AppState>,
+    id: String,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::retry(state.inner(), &id)
 }
 
 #[tauri::command]
@@ -450,139 +397,17 @@ pub fn set_project_embed_model(state: State<'_, AppState>, args: SetModelArgs) -
 
 #[tauri::command]
 pub fn stats(state: State<'_, AppState>) -> BiResult<Stats> {
-    let conn = state.db.conn()?;
-    let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-    let total_projects: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-    let total_agents: i64 = conn
-        .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
-        .unwrap_or(0);
-    let by_type = memory::count_by_type(state.inner(), None)?;
-    let mut by_project: Vec<(String, i64)> = {
-        let mut s = conn.prepare("SELECT id, memory_count FROM projects")?;
-        let v: Vec<_> = s
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(s);
-        v
-    };
-    by_project.sort_by_key(|b| std::cmp::Reverse(b.1));
-
-    let index_bytes = state.index_bytes();
-
-    let week_ago = chrono::Utc::now().timestamp_millis() - 7 * 24 * 3600 * 1000;
-    let recent_writes_7d: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM activity WHERE action IN ('write','update') AND created_at > ?1",
-        rusqlite::params![week_ago],
-        |r| r.get(0),
-    )?;
-    let recent_reads_7d: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM activity WHERE action = 'read' AND created_at > ?1",
-        rusqlite::params![week_ago],
-        |r| r.get(0),
-    )?;
-
-    Ok(Stats {
-        total_memories,
-        total_projects,
-        total_agents,
-        by_type,
-        by_project,
-        index_bytes,
-        recent_writes_7d,
-        recent_reads_7d,
-    })
-}
-
-#[derive(Serialize)]
-pub struct Bootstrap {
-    pub stats: Stats,
-    pub projects: Vec<Project>,
-    pub recent: Vec<ActivityEntry>,
-    pub tags: Vec<(String, i64)>,
-    pub agents: Vec<AgentEntry>,
-    pub consolidate: crate::scheduler::ConsolidateStatus,
+    crate::application::stats(state.inner())
 }
 
 #[tauri::command]
 pub fn bootstrap(state: State<'_, AppState>) -> BiResult<Bootstrap> {
-    Ok(Bootstrap {
-        stats: stats(state.clone())?,
-        projects: project::list(state.inner())?,
-        recent: recent_activity_inner(state.inner(), 25)?,
-        tags: memory::list_tags(state.inner(), None)?,
-        agents: list_agents_inner(state.inner())?,
-        consolidate: crate::scheduler::get_status(),
-    })
-}
-
-fn recent_activity_inner(state: &AppState, limit: usize) -> BiResult<Vec<ActivityEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, project_id, agent_id, action, memory_uid, detail, created_at
-         FROM activity ORDER BY created_at DESC LIMIT ?1",
-    )?;
-    let rows = s.query_map(rusqlite::params![limit as i64], |r| {
-        let detail_str: Option<String> = r.get(5)?;
-        let detail = detail_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(ActivityEntry {
-            id: r.get(0)?,
-            project_id: r.get(1)?,
-            agent_id: r.get(2)?,
-            action: r.get(3)?,
-            memory_uid: r.get(4)?,
-            detail,
-            created_at: r.get(6)?,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
-fn list_agents_inner(state: &AppState) -> BiResult<Vec<AgentEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, name, kind, last_seen, created_at, meta FROM agents ORDER BY last_seen DESC",
-    )?;
-    let rows = s.query_map([], |r| {
-        let meta_str: Option<String> = r.get(5)?;
-        let meta = meta_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(AgentEntry {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            kind: r.get(2)?,
-            last_seen: r.get(3)?,
-            created_at: r.get(4)?,
-            meta,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    crate::application::bootstrap(state.inner())
 }
 
 #[tauri::command]
 pub fn list_agents(state: State<'_, AppState>) -> BiResult<Vec<AgentEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, name, kind, last_seen, created_at, meta FROM agents ORDER BY last_seen DESC",
-    )?;
-    let rows = s.query_map([], |r| {
-        let meta_str: Option<String> = r.get(5)?;
-        let meta = meta_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(AgentEntry {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            kind: r.get(2)?,
-            last_seen: r.get(3)?,
-            created_at: r.get(4)?,
-            meta,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    crate::application::list_agents(state.inner())
 }
 
 #[derive(Deserialize)]
@@ -594,27 +419,7 @@ pub struct RegisterAgentArgs {
 
 #[tauri::command]
 pub fn register_agent(state: State<'_, AppState>, args: RegisterAgentArgs) -> BiResult<AgentEntry> {
-    let now = chrono::Utc::now().timestamp_millis();
-    let id = slugify(&args.name);
-    let meta_str = args.meta.as_ref().map(|v| v.to_string());
-    state.db.write(|tx| {
-        tx.execute(
-            "INSERT INTO agents(id, name, kind, last_seen, created_at, meta)
-             VALUES(?1,?2,?3,?4,?4,?5)
-             ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen,
-                                            meta = COALESCE(excluded.meta, agents.meta)",
-            rusqlite::params![id, args.name, args.kind, now, meta_str],
-        )?;
-        Ok(())
-    })?;
-    Ok(AgentEntry {
-        id,
-        name: args.name,
-        kind: args.kind,
-        last_seen: now,
-        created_at: now,
-        meta: args.meta,
-    })
+    crate::application::register_agent(state.inner(), args.name, args.kind, args.meta)
 }
 
 #[tauri::command]
@@ -622,43 +427,7 @@ pub fn recent_activity(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> BiResult<Vec<ActivityEntry>> {
-    let conn = state.db.conn()?;
-    let mut s = conn.prepare(
-        "SELECT id, project_id, agent_id, action, memory_uid, detail, created_at
-         FROM activity ORDER BY created_at DESC LIMIT ?1",
-    )?;
-    let rows = s.query_map(rusqlite::params![limit.unwrap_or(100) as i64], |r| {
-        let detail_str: Option<String> = r.get(5)?;
-        let detail = detail_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Ok(ActivityEntry {
-            id: r.get(0)?,
-            project_id: r.get(1)?,
-            agent_id: r.get(2)?,
-            action: r.get(3)?,
-            memory_uid: r.get(4)?,
-            detail,
-            created_at: r.get(6)?,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
-fn slugify(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+    crate::application::recent_activity(state.inner(), limit.unwrap_or(100))
 }
 
 // ── MCP config auto-install ─────────────────────────────────────────────
@@ -673,7 +442,11 @@ pub struct ResolveMcpBinaryResult {
 /// Tries: current_exe parent dir → dev build paths → bare name fallback.
 #[tauri::command]
 pub fn resolve_mcp_binary_path() -> ResolveMcpBinaryResult {
-    let exe_name = if cfg!(windows) { "biturbo-mcp.exe" } else { "biturbo-mcp" };
+    let exe_name = if cfg!(windows) {
+        "biturbo-mcp.exe"
+    } else {
+        "biturbo-mcp"
+    };
 
     // 1. Look next to the running app binary (installed builds)
     if let Ok(exe) = std::env::current_exe() {
@@ -733,24 +506,34 @@ pub fn install_mcp_config(
     let bin = resolve_mcp_binary_path();
     let bin_path = &bin.path;
 
-    let home = dirs::home_dir().ok_or_else(|| {
-        crate::error::BiError::Invalid("cannot resolve home directory".into())
-    })?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| crate::error::BiError::Invalid("cannot resolve home directory".into()))?;
 
     let (config_path, format): (std::path::PathBuf, &str) = match args.target.as_str() {
         "cursor" => (home.join(".cursor").join("mcp.json"), "json-cursor"),
-        "windsurf" => (home.join(".codeium").join("windsurf").join("mcp_config.json"), "json-cursor"),
+        "windsurf" => (
+            home.join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json"),
+            "json-cursor",
+        ),
         "claude" => (home.join(".claude.json"), "json-cursor"),
         "opencode" => {
             let base = if cfg!(target_os = "macos") {
-                home.join("Library").join("Application Support").join("opencode")
+                home.join("Library")
+                    .join("Application Support")
+                    .join("opencode")
             } else {
                 home.join(".config").join("opencode")
             };
             (base.join("opencode.json"), "json-opencode")
         }
         "codex" => (home.join(".codex").join("config.toml"), "toml-codex"),
-        other => return Err(crate::error::BiError::Invalid(format!("unknown target: {other}"))),
+        other => {
+            return Err(crate::error::BiError::Invalid(format!(
+                "unknown target: {other}"
+            )))
+        }
     };
 
     // Create parent dirs
@@ -767,7 +550,10 @@ pub fn install_mcp_config(
             // Cursor/Windsurf/Claude: { "mcpServers": { "biturbo": { ... } } }
             let mut root: serde_json::Value = if existed {
                 let content = std::fs::read_to_string(&config_path).map_err(|e| {
-                    crate::error::BiError::Invalid(format!("failed to read {}: {e}", config_path.display()))
+                    crate::error::BiError::Invalid(format!(
+                        "failed to read {}: {e}",
+                        config_path.display()
+                    ))
                 })?;
                 serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
             } else {
@@ -790,14 +576,20 @@ pub fn install_mcp_config(
                 crate::error::BiError::Invalid(format!("failed to serialize JSON: {e}"))
             })?;
             std::fs::write(&config_path, output).map_err(|e| {
-                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+                crate::error::BiError::Invalid(format!(
+                    "failed to write {}: {e}",
+                    config_path.display()
+                ))
             })?;
         }
         "json-opencode" => {
             // OpenCode: { "mcp": { "biturbo": { "type": "local", "command": [...], ... } } }
             let mut root: serde_json::Value = if existed {
                 let content = std::fs::read_to_string(&config_path).map_err(|e| {
-                    crate::error::BiError::Invalid(format!("failed to read {}: {e}", config_path.display()))
+                    crate::error::BiError::Invalid(format!(
+                        "failed to read {}: {e}",
+                        config_path.display()
+                    ))
                 })?;
                 serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
             } else {
@@ -818,15 +610,17 @@ pub fn install_mcp_config(
                 crate::error::BiError::Invalid(format!("failed to serialize JSON: {e}"))
             })?;
             std::fs::write(&config_path, output).map_err(|e| {
-                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+                crate::error::BiError::Invalid(format!(
+                    "failed to write {}: {e}",
+                    config_path.display()
+                ))
             })?;
         }
         "toml-codex" => {
             // Codex: ~/.codex/config.toml — [mcp_servers.biturbo] table
             // Simple text manipulation: remove existing [mcp_servers.biturbo] block, append new one.
-            let biturbo_block = format!(
-                "[mcp_servers.biturbo]\ncommand = \"{bin_path}\"\nargs = []\n"
-            );
+            let biturbo_block =
+                format!("[mcp_servers.biturbo]\ncommand = \"{bin_path}\"\nargs = []\n");
 
             let content = if existed {
                 std::fs::read_to_string(&config_path).unwrap_or_default()
@@ -842,7 +636,9 @@ pub fn install_mcp_config(
                 if trimmed.starts_with('[') && !trimmed.starts_with("[mcp_servers.biturbo") {
                     skip = false;
                 }
-                if trimmed == "[mcp_servers.biturbo]" || trimmed.starts_with("[mcp_servers.biturbo]") {
+                if trimmed == "[mcp_servers.biturbo]"
+                    || trimmed.starts_with("[mcp_servers.biturbo]")
+                {
                     skip = true;
                     continue;
                 }
@@ -859,7 +655,10 @@ pub fn install_mcp_config(
             new_content.push_str(&biturbo_block);
 
             std::fs::write(&config_path, new_content).map_err(|e| {
-                crate::error::BiError::Invalid(format!("failed to write {}: {e}", config_path.display()))
+                crate::error::BiError::Invalid(format!(
+                    "failed to write {}: {e}",
+                    config_path.display()
+                ))
             })?;
         }
         _ => unreachable!(),

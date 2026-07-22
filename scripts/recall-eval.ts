@@ -44,6 +44,7 @@ interface GoldenMemory {
   start_line?: number;
   end_line?: number;
   language?: string;
+  supersedes_alias?: string;
 }
 
 interface GoldenCase {
@@ -52,12 +53,16 @@ interface GoldenCase {
   expected_aliases: string[];
   k?: number;
   must_include?: string[];
+  must_exclude_aliases?: string[];
+  mem_type?: string;
+  expect_empty?: boolean;
 }
 
 interface GoldenFile {
   version: number;
   project: { id_prefix: string; name: string };
   memories: GoldenMemory[];
+  isolation_probe?: GoldenMemory;
   cases: GoldenCase[];
 }
 
@@ -128,8 +133,8 @@ class McpClient {
       const id = req.id;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        rejectP(new Error(`RPC ${req.method} timed out`));
-      }, 30_000);
+        rejectP(new Error(`RPC ${req.method} timed out: ${JSON.stringify(req.params)}`));
+      }, 120_000);
       this.pending.set(id, (r) => {
         clearTimeout(timer);
         resolveP(r);
@@ -177,7 +182,11 @@ function extractText(result: unknown): string {
 function extractJson<T>(result: unknown): T {
   const text = extractText(result);
   if (!text) throw new Error("empty MCP text result");
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`MCP returned non-JSON text: ${text}`);
+  }
 }
 
 function loadGolden(): GoldenFile {
@@ -188,7 +197,7 @@ function loadGolden(): GoldenFile {
 async function seedGolden(client: McpClient, golden: GoldenFile, projectId: string): Promise<Map<string, string>> {
   await client.callTool("create_project", {
     id: projectId,
-    name: golden.project.name,
+    name: `${golden.project.name} ${projectId}`,
     description: "Temporary recall eval project",
   });
 
@@ -205,6 +214,7 @@ async function seedGolden(client: McpClient, golden: GoldenFile, projectId: stri
       start_line: mem.start_line,
       end_line: mem.end_line,
       language: mem.language,
+      supersedes: mem.supersedes_alias ? aliases.get(mem.supersedes_alias) : undefined,
     });
     const json = extractJson<{ uid: string }>(result);
     aliases.set(mem.alias, json.uid);
@@ -223,13 +233,27 @@ type SearchHit = {
 
 async function runCase(client: McpClient, projectId: string, aliases: Map<string, string>, test: GoldenCase) {
   const k = test.k ?? 5;
-  const searchResult = await client.callTool("search", { query: test.query, project_id: projectId, k });
+  const searchResult = await client.callTool("search", {
+    query: test.query,
+    project_id: projectId,
+    k,
+    mem_type: test.mem_type,
+  });
   const hits = extractJson<SearchHit[]>(searchResult);
 
   const expectedUids = new Set(test.expected_aliases.map((a) => aliases.get(a)).filter(Boolean));
   const hitIndex = hits.findIndex((h) => h.uid && expectedUids.has(h.uid));
 
-  const recallResult = await client.callTool("recall_for_context", { query: test.query, project_id: projectId, k });
+  const excludedUids = new Set(
+    (test.must_exclude_aliases ?? []).map((alias) => aliases.get(alias)).filter(Boolean),
+  );
+  const excludedHit = hits.some((hit) => hit.uid && excludedUids.has(hit.uid));
+  const recallResult = await client.callTool("recall_for_context", {
+    query: test.query,
+    project_id: projectId,
+    k,
+    mem_type: test.mem_type,
+  });
   const context = extractText(recallResult);
   const missingTerms = (test.must_include ?? []).filter(
     (term) => !context.toLowerCase().includes(term.toLowerCase()),
@@ -237,9 +261,10 @@ async function runCase(client: McpClient, projectId: string, aliases: Map<string
 
   return {
     name: test.name,
-    hit: hitIndex >= 0,
+    hit: test.expect_empty ? hits.length === 0 : hitIndex >= 0,
     rank: hitIndex >= 0 ? hitIndex + 1 : null,
     missingTerms,
+    excludedHit,
     top: hits.slice(0, k).map((h) => ({
       uid: h.uid,
       score: h.score,
@@ -262,29 +287,48 @@ async function main() {
   }
 
   const projectId = `${golden.project.id_prefix}-${Date.now().toString(36)}`;
+  const isolatedProjectId = `${projectId}-isolated`;
   const client = new McpClient(bin);
   const results: Awaited<ReturnType<typeof runCase>>[] = [];
 
   try {
     await client.initialize();
     const aliases = await seedGolden(client, golden, projectId);
+    if (golden.isolation_probe) {
+      await client.callTool("create_project", {
+        id: isolatedProjectId,
+        name: `${golden.project.name} Isolated ${projectId}`,
+      });
+      await client.callTool("remember", {
+        ...golden.isolation_probe,
+        project_id: isolatedProjectId,
+      });
+    }
     for (const c of golden.cases) results.push(await runCase(client, projectId, aliases, c));
     await client.callTool("delete_project", { project_id: projectId });
+    if (golden.isolation_probe) {
+      await client.callTool("delete_project", { project_id: isolatedProjectId });
+    }
   } finally {
     client.close();
   }
 
   const hits = results.filter((r) => r.hit).length;
-  const fullPass = results.filter((r) => r.hit && r.missingTerms.length === 0).length;
+  const fullPass = results.filter(
+    (r) => r.hit && r.missingTerms.length === 0 && !r.excludedHit,
+  ).length;
   const recallAtK = hits / results.length;
 
   console.log("");
   for (const r of results) {
-    const status = r.hit && r.missingTerms.length === 0 ? `${COL.green}PASS${COL.reset}` : `${COL.red}FAIL${COL.reset}`;
+    const status = r.hit && r.missingTerms.length === 0 && !r.excludedHit
+      ? `${COL.green}PASS${COL.reset}`
+      : `${COL.red}FAIL${COL.reset}`;
     const rank = r.rank ? `rank=${r.rank}` : "not found";
     console.log(`  ${status} ${r.name} ${COL.dim}${rank}${COL.reset}`);
     if (r.missingTerms.length) console.log(`       missing in context: ${r.missingTerms.join(", ")}`);
-    if (!r.hit || r.missingTerms.length) {
+    if (r.excludedHit) console.log("       stale or isolated result was returned");
+    if (!r.hit || r.missingTerms.length || r.excludedHit) {
       console.log("       top hits:");
       for (const h of r.top) {
         const score = typeof h.score === "number" ? h.score.toFixed(4) : "n/a";
