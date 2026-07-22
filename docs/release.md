@@ -5,20 +5,22 @@ biTurbo is built and released through GitHub Actions. The release pipeline produ
 ## Quick start
 
 1. Make sure all changes are committed and pushed to `main`.
-2. Bump the version in `package.json` and `src-tauri/tauri.conf.json` if needed.
+2. Bump the version in `package.json`, both lockfiles, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`.
 3. Run the release script:
 
    ```bash
    npm run release
    ```
 
-This reads the current version from `package.json`, creates a git tag like `v0.1.0`, and pushes it to GitHub. The tag triggers the [`.github/workflows/release.yml`](../.github/workflows/release.yml) workflow, which builds all three targets and creates a draft GitHub Release.
+This reads the current version from `package.json`, creates a git tag like `v0.2.0`, and pushes it to GitHub. The tag triggers the [`.github/workflows/release.yml`](../.github/workflows/release.yml) workflow, which builds all three targets and creates a draft GitHub Release.
 
 ## Versioning
 
-The release script uses the version in `package.json`. Keep it in sync with `src-tauri/tauri.conf.json`:
+The release script uses the version in `package.json`. Keep all release metadata in sync:
 
 - `package.json` → `"version"`
+- `package-lock.json` → root package versions
+- `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock` → crate version
 - `src-tauri/tauri.conf.json` → `"version"`
 
 If the tag already exists (e.g. `v0.1.0`), the script refuses to run. Bump the version, commit, and push before releasing again.

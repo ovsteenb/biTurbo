@@ -40,7 +40,7 @@ When in doubt, recall. It is cheap. It is correct.
 
 ---
 
-## 3. Tool surface (16 tools, all via MCP)
+## 3. Tool surface (27 tools, all via MCP)
 
 ### Memories
 
@@ -52,7 +52,10 @@ When in doubt, recall. It is cheap. It is correct.
 | `get_memory` | Fetch one by uid. Use when you need the full record (incl. metadata, access stats). |
 | `search` | Semantic search. `query` is a natural-language question or phrase. Returns scored hits. |
 | `list` | Paginated list with filters. Use when you need the raw stream (no semantic ranking). |
+| `list_tags` | List project tags and their usage counts. |
 | `recall_for_context` | **Use this, not raw `search`, when injecting into a prompt.** It formats results as a clean `<biTurboContext>` block. |
+| `recall_explain` | Recall with vector/FTS ranks, matched terms, applied feedback boosts, and a recall id. |
+| `submit_recall_feedback` | Mark a recalled memory useful or not useful. Explicit feedback has more weight than implicit usage. |
 
 ### Projects
 
@@ -68,15 +71,28 @@ When in doubt, recall. It is cheap. It is correct.
 | Tool | When to use it |
 |---|---|
 | `ingest_project` | Walk a directory, parse 22 languages with tree-sitter (including Rust, TypeScript, Python, Go, Kotlin, SQL, Dart, Lua, Scala, R, and PowerShell), embed definition-level chunks as `code` memories, and store the directory tree. **Run this once per project after `create_project`**, then re-run when the code changes meaningfully. |
+| `start_ingest` | Start the same ingest asynchronously and return a persisted operation record. |
+
+### Supervised operations
+
+| Tool | When to use it |
+|---|---|
+| `operation_status` | Poll one persisted operation by id. |
+| `list_operations` | List recent operations. Operation metadata is global; memory results remain project-scoped. |
+| `cancel_operation` | Request cancellation at the next safe batch boundary. |
+| `retry_operation` | Retry a failed or cancelled operation from its persisted input checkpoint. |
 
 ### Maintenance
 
 | Tool | When to use it |
 |---|---|
 | `consolidate` | Apply exponential decay, find near-duplicates (cosine ≥ 0.95), merge them. Run on demand or schedule. Cheap on small corpora. |
+| `consolidate_status` | Inspect the background consolidation scheduler. |
 | `stats` | Global memory/project counts. |
+| `bootstrap` | Fetch stats, projects, recent activity, tags, agents, and consolidation status in one call. |
 | `recent_activity` | Audit log of recent writes/reads/ingests. |
 | `register_agent` | **Call once per session** to attribute your writes. |
+| `get_project_name_from_file` | Resolve `projectName` from a project root's `.biTurbo` file. |
 
 ---
 
